@@ -1,4 +1,5 @@
 import { runnerBridge } from "./scripts/vite-runner";
+import { electrobunViteAliases } from "./.hutch/devkit/api/config/electrobun-vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -8,7 +9,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), runnerBridge()],
   resolve: {
     alias: [
-      { find: "electrobun/view", replacement: resolve(__dirname, "src/mainview/lib/electrobun-stub.ts") },
+      ...electrobunViteAliases(resolve(__dirname, ".hutch/devkit")),
       { find: "@", replacement: resolve(__dirname, "src/mainview") },
     ],
   },

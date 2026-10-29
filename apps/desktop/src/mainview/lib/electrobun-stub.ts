@@ -8,7 +8,13 @@ export class Electroview {
   }
   rpc = {
     request: {
-      service: async () => ({ ok: false }),
+      service: async () => ({
+        ok: false as const,
+        error: {
+          code: "NOT_DESKTOP",
+          message: "Electrobun bridge not available",
+        },
+      }),
     },
   };
 }
