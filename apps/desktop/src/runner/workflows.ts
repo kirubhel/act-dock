@@ -409,16 +409,30 @@ export function prepareGitLabWorkflowSync(
     out += `    steps:\n`;
     const scripts: string[] = [];
     if (Array.isArray(j.before_script))
-      scripts.push(...j.before_script.map(String));
+      scripts.push(...j.before_script.flat(Infinity).map(String));
     else if (globalBefore.length > 0) scripts.push(...globalBefore);
 
-    if (Array.isArray(j.script)) scripts.push(...j.script.map(String));
+    if (Array.isArray(j.script))
+      scripts.push(...j.script.flat(Infinity).map(String));
     else if (typeof j.script === "string") scripts.push(j.script);
     else scripts.push(`echo "Completed ${key}"`);
 
     out += `      - name: "${key.replace(/"/g, '\\"')}"\n`;
     out += `        shell: bash\n`;
     out += `        run: |\n`;
+    out += `          if ! command -v envsubst >/dev/null 2>&1; then\n`;
+    out += `            cat << 'ACTDOCK_ENVSUBST' > /tmp/envsubst 2>/dev/null || true\n`;
+    out += `#!/usr/bin/env python3\n`;
+    out += `import os, sys, re\n`;
+    out += `pattern = re.compile(r'\\$\\{([A-Za-z0-9_]+)\\}|\\$([A-Za-z0-9_]+)')\n`;
+    out += `def repl(m):\n`;
+    out += `    k = m.group(1) or m.group(2)\n`;
+    out += `    return os.environ.get(k, '')\n`;
+    out += `sys.stdout.write(pattern.sub(repl, sys.stdin.read()))\n`;
+    out += `ACTDOCK_ENVSUBST\n`;
+    out += `            chmod +x /tmp/envsubst 2>/dev/null || true\n`;
+    out += `            export PATH="/tmp:$PATH"\n`;
+    out += `          fi\n`;
     for (const line of scripts) {
       for (const sub of line.split("\n")) {
         out += `          ${sub}\n`;

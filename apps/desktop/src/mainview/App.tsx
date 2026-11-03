@@ -3,6 +3,7 @@ import brandMark from "../../assets/brand/pipeline-loop.png";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeProvider, useTheme } from "next-themes";
 import { toast } from "sonner";
+import { parseJobStatusesFromLogs, type JobStatus } from "@/lib/job-status";
 import {
   Workflow as WorkflowIcon,
   Plus,
@@ -127,7 +128,10 @@ function Workspace() {
     [error, setError] = useState(""),
     [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false),
-    [runWorkflow, setRunWorkflow] = useState<Workflow | null>(null),
+    [runWorkflow, setRunWorkflow] = useState<{
+      workflow: Workflow;
+      initialJobId?: string;
+    } | null>(null),
     [remove, setRemove] = useState<Project | null>(null),
     [runnerStopped, setRunnerStopped] = useState(false),
     [mobileRun, setMobileRun] = useState(false);
@@ -141,6 +145,81 @@ function Workspace() {
   const project = projects.find((p) => p.id === selected) || null;
   const workflow =
     workflows.find((w) => w.path === selectedWorkflow) || workflows[0] || null;
+
+  const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatus>>({});
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+
+  const activeWorkflowRun = useMemo(() => {
+    if (
+      selectedRun &&
+      selectedRun.request.projectId === project?.id &&
+      selectedRun.request.workflowPath === workflow?.path
+    ) {
+      return selectedRun;
+    }
+    return (
+      runs.find(
+        (r) =>
+          r.request.projectId === project?.id &&
+          r.request.workflowPath === workflow?.path,
+      ) || null
+    );
+  }, [selectedRun, runs, project?.id, workflow?.path]);
+
+  useEffect(() => {
+    if (!activeWorkflowRun || !workflow) {
+      setJobStatuses({});
+      return;
+    }
+    let alive = true;
+    async function loadJobStatuses() {
+      try {
+        const page = await api("get_run_logs", {
+          runId: activeWorkflowRun!.id,
+          cursor: 0,
+          limit: 2000,
+        });
+        if (alive && workflow) {
+          setJobStatuses(parseJobStatusesFromLogs(workflow.jobs, page.entries));
+        }
+      } catch {}
+    }
+    void loadJobStatuses();
+
+    const unsubscribe = subscribeEvents((events) => {
+      if (events.some((e) => e.runId === activeWorkflowRun?.id)) {
+        void loadJobStatuses();
+      }
+    });
+
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [activeWorkflowRun?.id, workflow]);
+
+  const handleRunSpecificJob = async (jobId: string) => {
+    if (!project || !workflow) return;
+    setRunningJobId(jobId);
+    try {
+      toast.info(`Queuing job ${jobId}...`);
+      const r = await api("run_pipeline", {
+        projectId: project.id,
+        workflowPath: workflow.path,
+        jobId,
+        event: project.defaults.event || "push",
+        inputs: {},
+        architecture: project.defaults.architecture || "auto",
+        execution: project.defaults.execution,
+      });
+      toast.success(`Queued job ${jobId}`);
+      showRun(r);
+    } catch (err) {
+      toast.error(fail(err));
+    } finally {
+      setRunningJobId(null);
+    }
+  };
 
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [projectFilter, setProjectFilter] = useState("");
@@ -924,21 +1003,84 @@ function Workspace() {
                         ) : (
                           <>
                             <div className="jobs-list">
-                              {workflow.jobs.map((j) => (
-                                <div className="job-row" key={j.id}>
-                                  <span className="job-node" />
-                                  <div>
-                                    <h3>{j.name}</h3>
-                                    <p className="mono">
-                                      {j.runners.join(", ") ||
-                                        "Reusable workflow"}
-                                    </p>
-                                    {j.needs.length > 0 && (
-                                      <p>Needs: {j.needs.join(", ")}</p>
-                                    )}
+                              {workflow.jobs.map((j) => {
+                                const status =
+                                  runningJobId === j.id
+                                    ? "running"
+                                    : jobStatuses[j.id];
+                                return (
+                                  <div className="job-row" key={j.id}>
+                                    <div className="flex items-center justify-center size-5 shrink-0">
+                                      {status === "success" && (
+                                        <CircleCheck className="size-4 text-emerald-500 fill-emerald-500/10" />
+                                      )}
+                                      {status === "failure" && (
+                                        <CircleX className="size-4 text-rose-500 fill-rose-500/10" />
+                                      )}
+                                      {status === "running" && (
+                                        <LoaderCircle className="size-4 text-sky-400 animate-spin" />
+                                      )}
+                                      {(!status || status === "pending") && (
+                                        <span className="job-node" />
+                                      )}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <h3 className="truncate">{j.name}</h3>
+                                        {status === "success" && (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 border-emerald-500/30 text-emerald-500 font-normal"
+                                          >
+                                            Passed
+                                          </Badge>
+                                        )}
+                                        {status === "failure" && (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 border-rose-500/30 text-rose-500 font-normal"
+                                          >
+                                            Failed
+                                          </Badge>
+                                        )}
+                                        {status === "running" && (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 border-sky-400/30 text-sky-400 font-normal"
+                                          >
+                                            Running
+                                          </Badge>
+                                        )}
+                                      </div>
+                                      <p className="mono">
+                                        {j.runners.join(", ") ||
+                                          "Reusable workflow"}
+                                      </p>
+                                      {j.needs.length > 0 && (
+                                        <p>Needs: {j.needs.join(", ")}</p>
+                                      )}
+                                    </div>
+                                    <div className="job-actions">
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                                        title={`Rerun only ${j.name}`}
+                                        disabled={
+                                          runnerStopped || runningJobId !== null
+                                        }
+                                        onClick={() =>
+                                          handleRunSpecificJob(j.id)
+                                        }
+                                      >
+                                        <RefreshCw
+                                          className={`size-3.5 ${runningJobId === j.id ? "animate-spin" : ""}`}
+                                        />
+                                      </Button>
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                             {workflow.inputs.length > 0 && (
                               <p className="field-help">
@@ -986,7 +1128,7 @@ function Workspace() {
                       workflowLoading ||
                       !!workflowError
                     }
-                    onClick={() => setRunWorkflow(workflow)}
+                    onClick={() => setRunWorkflow({ workflow })}
                   >
                     <Play className="size-4" />
                     Run workflow
@@ -1130,9 +1272,10 @@ function Workspace() {
       )}
       {project && runWorkflow && (
         <RunDialog
-          key={runWorkflow.path}
+          key={runWorkflow.workflow.path + (runWorkflow.initialJobId || "")}
           project={project}
-          workflow={runWorkflow}
+          workflow={runWorkflow.workflow}
+          initialJobId={runWorkflow.initialJobId}
           onClose={() => setRunWorkflow(null)}
           onRun={(r) => {
             showRun(r);

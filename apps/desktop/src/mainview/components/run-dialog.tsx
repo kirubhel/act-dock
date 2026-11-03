@@ -71,11 +71,13 @@ export function Choice({
 export function RunDialog({
   workflow: w,
   project: p,
+  initialJobId,
   onClose,
   onRun,
 }: {
   workflow: Workflow;
   project: Project;
+  initialJobId?: string;
   onClose: () => void;
   onRun: (r: Run) => void;
 }) {
@@ -86,6 +88,7 @@ export function RunDialog({
   const [request, setRequest] = useState<RunRequest>({
     projectId: p.id,
     workflowPath: w.path,
+    jobId: initialJobId,
     event:
       p.defaults.event && w.events.includes(p.defaults.event)
         ? p.defaults.event
