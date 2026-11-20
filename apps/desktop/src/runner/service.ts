@@ -28,6 +28,18 @@ import { preflightRun } from "./preflight";
 import { resolveExecution } from "./execution-config";
 import { readEvents } from "./events";
 import { browseFolders } from "./folders";
+import {
+  listCategoryGitAccess, listProjectGitAccess, putCategoryGitAccess,
+  putProjectGitAccess, addGitHost, removeGitHost, getLatestPipelines, listGitHosts, deleteCategoryGitAccess, deleteProjectGitAccess,
+  listBranchPipelines, deleteBranch, renameBranch,
+  getBranchPipelineDetail, getBranchJobErrors,
+} from "./branch-pipelines";
+import { getPullRequest, listPullRequests, submitPullRequestReview } from "./pull-requests";
+import { claudeAnswer, claudeReview } from "./claude-review";
+import {
+  addMember, createJiraIssue, deleteJiraConfig, getJiraConfig, linkMemberJira, listJiraProjects,
+  listMembers, putJiraConfig, removeMember, searchJiraUsers,
+} from "./jira";
 import { setLogin } from "./login";
 import { listenLocal } from "./transport";
 export async function serve() {
@@ -351,6 +363,10 @@ export async function serve() {
         store.removeProject(p.projectId);
         return null;
       }
+      case "remove_category": {
+        const p = methods[method].parse(raw);
+        return store.removeCategory(p.category);
+      }
       case "save_defaults": {
         const p = methods[method].parse(raw);
         return store.putProject({
@@ -370,6 +386,118 @@ export async function serve() {
       case "list_workflows": {
         const p = methods[method].parse(raw);
         return discover(store.project(p.projectId));
+      }
+      case "get_latest_pipelines": {
+        const p = methods.get_latest_pipelines.parse(raw);
+        return getLatestPipelines(store, store.project(p.projectId));
+      }
+      case "list_git_hosts":
+        return listGitHosts(store);
+      case "add_git_host": {
+        const p = methods.add_git_host.parse(raw);
+        return addGitHost(store, p.host);
+      }
+      case "remove_git_host": {
+        const p = methods.remove_git_host.parse(raw);
+        return removeGitHost(store, p.host);
+      }
+      case "list_category_git_access": {
+        const p = methods.list_category_git_access.parse(raw);
+        return listCategoryGitAccess(store, p.category);
+      }
+      case "list_project_git_access": {
+        const p = methods.list_project_git_access.parse(raw);
+        return listProjectGitAccess(store, p.projectId);
+      }
+      case "put_category_git_access": {
+        const p = methods.put_category_git_access.parse(raw);
+        return putCategoryGitAccess(store, p.category, p.provider, p.token);
+      }
+      case "put_project_git_access": {
+        const p = methods.put_project_git_access.parse(raw);
+        return putProjectGitAccess(store, p.projectId, p.provider, p.token);
+      }
+      case "delete_category_git_access": {
+        const p = methods.delete_category_git_access.parse(raw);
+        return deleteCategoryGitAccess(store, p.category, p.provider);
+      }
+      case "delete_project_git_access": {
+        const p = methods.delete_project_git_access.parse(raw);
+        return deleteProjectGitAccess(store, p.projectId, p.provider);
+      }
+      case "list_members": {
+        const p = methods.list_members.parse(raw);
+        return listMembers(store, p);
+      }
+      case "add_member": {
+        const p = methods.add_member.parse(raw);
+        return addMember(store, p, p.name, p.email);
+      }
+      case "remove_member": {
+        const p = methods.remove_member.parse(raw);
+        return removeMember(store, p, p.email);
+      }
+      case "search_jira_users": {
+        const p = methods.search_jira_users.parse(raw);
+        return searchJiraUsers(store, p.jiraProject, p.query);
+      }
+      case "link_member_jira": {
+        const p = methods.link_member_jira.parse(raw);
+        return linkMemberJira(store, store.project(p.projectId), p.email, p.accountId, p.displayName);
+      }
+      case "get_jira_config":
+        return getJiraConfig(store);
+      case "put_jira_config": {
+        const p = methods.put_jira_config.parse(raw);
+        return putJiraConfig(store, p);
+      }
+      case "delete_jira_config":
+        return deleteJiraConfig(store);
+      case "list_jira_projects":
+        return listJiraProjects(store);
+      case "create_jira_issue": {
+        const p = methods.create_jira_issue.parse(raw);
+        return createJiraIssue(store, store.project(p.projectId), p);
+      }
+      case "list_branch_pipelines": {
+        const p = methods.list_branch_pipelines.parse(raw);
+        return listBranchPipelines(store, store.project(p.projectId));
+      }
+      case "delete_branch": {
+        const p = methods.delete_branch.parse(raw);
+        return deleteBranch(store, store.project(p.projectId), p.branch);
+      }
+      case "rename_branch": {
+        const p = methods.rename_branch.parse(raw);
+        return renameBranch(store, store.project(p.projectId), p.oldBranch, p.newBranch);
+      }
+      case "get_branch_pipeline_detail": {
+        const p = methods.get_branch_pipeline_detail.parse(raw);
+        return getBranchPipelineDetail(store, store.project(p.projectId), p.pipelineId);
+      }
+      case "get_branch_job_errors": {
+        const p = methods.get_branch_job_errors.parse(raw);
+        return getBranchJobErrors(store, store.project(p.projectId), p.jobId);
+      }
+      case "list_pull_requests": {
+        const p = methods.list_pull_requests.parse(raw);
+        return listPullRequests(store, store.project(p.projectId));
+      }
+      case "get_pull_request": {
+        const p = methods.get_pull_request.parse(raw);
+        return getPullRequest(store, store.project(p.projectId), p.number);
+      }
+      case "submit_pull_request_review": {
+        const p = methods.submit_pull_request_review.parse(raw);
+        return submitPullRequestReview(store, store.project(p.projectId), p, source);
+      }
+      case "review_pull_request_with_claude": {
+        const p = methods.review_pull_request_with_claude.parse(raw);
+        return claudeReview(await getPullRequest(store, store.project(p.projectId), p.number));
+      }
+      case "ask_claude_about_pull_request": {
+        const p = methods.ask_claude_about_pull_request.parse(raw);
+        return claudeAnswer(await getPullRequest(store, store.project(p.projectId), p.number), p.question, p.history);
       }
       case "run_pipeline": {
         const { secretOverrides, ...p } = methods.run_pipeline.parse(raw);
@@ -454,20 +582,22 @@ export async function serve() {
       const data = await dispatch(body.method, body.params, body.source);
       return Response.json({ ok: true, data });
     } catch (e) {
+      console.error("[runner-dispatch-error]", e);
       return Response.json(
         {
           ok: false,
           error: {
             code:
-              e instanceof AppError
-                ? e.code
+              e instanceof AppError || (e as any)?.name === "AppError"
+                ? (e as any).code
                 : e instanceof z.ZodError
                   ? "VALIDATION_ERROR"
                   : (e as NodeJS.ErrnoException).code || "INTERNAL_ERROR",
             message:
-              e instanceof AppError
-                ? e.message
-                : "The runner could not complete the request. Check the selected configuration and System health.",
+              (e as any)?.message ||
+              (e instanceof AppError || (e as any)?.name === "AppError"
+                ? (e as any).message
+                : String(e)),
           },
         },
         { status: 400 },

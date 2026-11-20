@@ -341,6 +341,10 @@
   border-right: 1px solid var(--border);
   min-height: 0;
 }
+.branch-pipelines {
+  margin: 0 24px 18px;
+  min-width: 0;
+}
 .project-heading {
   padding: 27px 24px 22px;
   display: flex;

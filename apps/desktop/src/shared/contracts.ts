@@ -184,6 +184,94 @@ export const folderListingSchema = z.object({
   detectedProjects: z.array(detectedProjectSchema).optional(),
 });
 export type FolderListing = z.infer<typeof folderListingSchema>;
+export const gitProviderSchema = z.enum(["github", "gitlab"]);
+export type GitProvider = z.infer<typeof gitProviderSchema>;
+export type CategoryGitAccess = { provider: GitProvider; configured: boolean; updatedAt?: string };
+export const memberSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+  scope: z.enum(["project", "category"]),
+  /** Jira account this person was linked to by name when their email is hidden in Jira. */
+  accountId: z.string().optional(),
+  jiraName: z.string().optional(),
+});
+export type Member = z.infer<typeof memberSchema>;
+export type MemberList = { members: Member[]; category?: string };
+export const jiraConfigSchema = z.object({
+  site: z.string().optional(),
+  email: z.string().optional(),
+  tokenConfigured: z.boolean(),
+});
+export type JiraConfig = z.infer<typeof jiraConfigSchema>;
+export const jiraProjectSchema = z.object({ key: z.string(), name: z.string() });
+export const jiraUserSchema = z.object({
+  accountId: z.string(),
+  displayName: z.string(),
+  emailAddress: z.string().optional(),
+});
+export type JiraUser = z.infer<typeof jiraUserSchema>;
+export type JiraProject = z.infer<typeof jiraProjectSchema>;
+export const jiraIssueSchema = z.object({
+  key: z.string(),
+  url: z.string(),
+  assignee: z.string().optional(),
+});
+export type JiraIssue = z.infer<typeof jiraIssueSchema>;
+/** Members belong to exactly one project or one folder group (category). */
+const memberScope = z
+  .object({ projectId: z.string().optional(), category: z.string().trim().min(1).optional() })
+  .refine((v) => (v.projectId === undefined) !== (v.category === undefined), "Choose a project or a group.");
+export type BranchPipeline = {
+  id?: number;
+  branch: string;
+  status: string;
+  conclusion?: string;
+  name?: string;
+  url?: string;
+  updatedAt?: string;
+};
+export type RemotePipelineJob = {
+  id: number;
+  name: string;
+  status: string;
+  conclusion?: string;
+  failureReason?: string;
+  stage?: string;
+  url?: string;
+  steps: { number: number; name: string; status: string; conclusion?: string }[];
+};
+export type RemotePipelineDetail = {
+  jobs: RemotePipelineJob[];
+};
+export type RemoteJobErrors = { lines: string[]; truncated: boolean };
+export type PipelineState = "running" | "success" | "failed" | "other";
+export type LatestPipeline = { id: number; branch: string; state: PipelineState; url?: string; updatedAt?: string };
+export type LatestPipelines = { provider: GitProvider; repository: string; host?: string; pipelines: LatestPipeline[] };
+export type BranchPipelines = {
+  provider: GitProvider;
+  repository: string;
+  host?: string;
+  branches: BranchPipeline[];
+};
+export type PullRequestDecision = "approve" | "request_changes" | "comment";
+export type PullRequestSummary = {
+  number: number; title: string; author: string; own: boolean; draft: boolean;
+  branch: string; base: string; url: string; updatedAt: string; headSha: string;
+};
+export type PullRequestList = {
+  provider: GitProvider; repository: string; host?: string; viewer?: string; pullRequests: PullRequestSummary[];
+};
+export type PullRequestFile = {
+  path: string; oldPath?: string; status: "added" | "modified" | "removed" | "renamed";
+  additions: number; deletions: number; patch?: string;
+};
+export type PullRequestDetail = PullRequestSummary & {
+  provider: GitProvider; repository: string; host?: string; body: string; files: PullRequestFile[]; truncated: boolean;
+};
+export type PullRequestReviewResult = { ok: true; decision: PullRequestDecision; url?: string };
+export type ClaudeFinding = { file?: string; line?: number; severity: "high" | "medium" | "low" | "nit"; comment: string };
+export type ClaudeReview = { verdict: PullRequestDecision | null; summary: string; findings: ClaudeFinding[]; reviewBody: string };
+export type ClaudeAnswer = { answer: string };
 export const checkStatuses = [
   "ok",
   "warning",
@@ -275,6 +363,7 @@ export const methods = {
     category: z.string().optional(),
   }),
   remove_project: z.object({ projectId: z.string() }),
+  remove_category: z.object({ category: z.string().trim().min(1) }),
   save_defaults: z.object({
     projectId: z.string(),
     defaults: runRequestSchema
@@ -288,6 +377,76 @@ export const methods = {
       .partial(),
   }),
   list_workflows: z.object({ projectId: z.string() }),
+  list_category_git_access: z.object({ category: z.string().trim().min(1) }),
+  list_project_git_access: z.object({ projectId: z.string() }),
+  put_category_git_access: z.object({
+    category: z.string().trim().min(1),
+    provider: gitProviderSchema,
+    token: z.string().min(1).max(49152),
+  }),
+  delete_category_git_access: z.object({
+    category: z.string().trim().min(1),
+    provider: gitProviderSchema,
+  }),
+  put_project_git_access: z.object({
+    projectId: z.string(), provider: gitProviderSchema, token: z.string().min(1).max(49152),
+  }),
+  delete_project_git_access: z.object({ projectId: z.string(), provider: gitProviderSchema }),
+  list_members: memberScope,
+  add_member: z.object({
+    projectId: z.string().optional(), category: z.string().trim().min(1).optional(),
+    name: z.string().trim().min(1).max(120), email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
+  }).refine((v) => (v.projectId === undefined) !== (v.category === undefined), "Choose a project or a group."),
+  remove_member: z.object({
+    projectId: z.string().optional(), category: z.string().trim().min(1).optional(),
+    email: z.string().trim().toLowerCase().max(254),
+  }).refine((v) => (v.projectId === undefined) !== (v.category === undefined), "Choose a project or a group."),
+  search_jira_users: z.object({
+    jiraProject: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]{1,19}$/),
+    query: z.string().trim().min(1).max(120),
+  }),
+  link_member_jira: z.object({
+    projectId: z.string(), email: z.string().trim().toLowerCase().max(254),
+    accountId: z.string().trim().min(1).max(128), displayName: z.string().trim().max(200).optional(),
+  }),
+  get_jira_config: z.object({}).optional(),
+  put_jira_config: z.object({
+    site: z.string().trim().min(1).max(260), email: z.string().trim().max(254).pipe(z.email()),
+    token: z.string().min(1).max(4096).optional(),
+  }),
+  delete_jira_config: z.object({}).optional(),
+  list_jira_projects: z.object({}).optional(),
+  create_jira_issue: z.object({
+    projectId: z.string(), jiraProject: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]{1,19}$/),
+    summary: z.string().trim().min(1).max(255), description: z.string().max(30000).optional(),
+    issueType: z.string().trim().min(1).max(60).default("Task"),
+    assigneeEmail: z.string().trim().toLowerCase().max(254).optional(),
+  }),
+  list_git_hosts: z.object({}).optional(),
+  get_latest_pipelines: z.object({ projectId: z.string() }),
+  add_git_host: z.object({ host: z.string().trim().min(1).max(260) }),
+  remove_git_host: z.object({ host: z.string().trim().min(1).max(260) }),
+  list_branch_pipelines: z.object({ projectId: z.string() }),
+  delete_branch: z.object({ projectId: z.string(), branch: z.string().trim().min(1) }),
+  rename_branch: z.object({ projectId: z.string(), oldBranch: z.string().trim().min(1), newBranch: z.string().trim().min(1) }),
+  get_branch_pipeline_detail: z.object({ projectId: z.string(), pipelineId: z.number().int().positive() }),
+  get_branch_job_errors: z.object({ projectId: z.string(), jobId: z.number().int().positive() }),
+  list_pull_requests: z.object({ projectId: z.string() }),
+  get_pull_request: z.object({ projectId: z.string(), number: z.number().int().positive() }),
+  submit_pull_request_review: z.object({
+    projectId: z.string(),
+    number: z.number().int().positive(),
+    decision: z.enum(["approve", "request_changes", "comment"]),
+    body: z.string().max(60000).default(""),
+    headSha: z.string().regex(/^[0-9a-f]{7,64}$/i).optional(),
+  }),
+  review_pull_request_with_claude: z.object({ projectId: z.string(), number: z.number().int().positive() }),
+  ask_claude_about_pull_request: z.object({
+    projectId: z.string(),
+    number: z.number().int().positive(),
+    question: z.string().trim().min(1).max(4000),
+    history: z.array(z.object({ role: z.enum(["user", "claude"]), text: z.string().max(12000) })).max(20).default([]),
+  }),
   run_pipeline: runRequestSchema.extend({
     secretOverrides: secretOverridesSchema.optional(),
   }),
@@ -380,6 +539,9 @@ export const methods = {
   stop: z.object({}),
 } as const;
 export type Method = keyof typeof methods;
+/** Methods that wait on the local Claude CLI and may legitimately take minutes. */
+const slowMethods: readonly Method[] = ["review_pull_request_with_claude", "ask_claude_about_pull_request"];
+export const requestTimeoutMs = (method: Method) => (slowMethods.includes(method) ? 300_000 : undefined);
 export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_execution_config: {
     effective: ExecutionSnapshot;
@@ -393,8 +555,39 @@ export type Results = Omit<ExecutionResults, "patch_settings"> & {
   add_project: Project;
   add_projects_batch: Project[];
   remove_project: null;
+  remove_category: number;
   save_defaults: Project;
   list_workflows: Workflow[];
+  list_category_git_access: CategoryGitAccess[];
+  list_project_git_access: CategoryGitAccess[];
+  put_category_git_access: CategoryGitAccess;
+  delete_category_git_access: null;
+  put_project_git_access: CategoryGitAccess;
+  delete_project_git_access: null;
+  list_members: MemberList;
+  add_member: MemberList;
+  remove_member: MemberList;
+  search_jira_users: JiraUser[];
+  link_member_jira: MemberList;
+  get_jira_config: JiraConfig;
+  put_jira_config: JiraConfig;
+  delete_jira_config: null;
+  list_jira_projects: JiraProject[];
+  create_jira_issue: JiraIssue;
+  list_git_hosts: string[];
+  get_latest_pipelines: LatestPipelines;
+  add_git_host: string[];
+  remove_git_host: string[];
+  list_branch_pipelines: BranchPipelines;
+  delete_branch: { ok: boolean; branch: string };
+  rename_branch: { ok: boolean; oldBranch: string; newBranch: string };
+  get_branch_pipeline_detail: RemotePipelineDetail;
+  get_branch_job_errors: RemoteJobErrors;
+  list_pull_requests: PullRequestList;
+  get_pull_request: PullRequestDetail;
+  submit_pull_request_review: PullRequestReviewResult;
+  review_pull_request_with_claude: ClaudeReview;
+  ask_claude_about_pull_request: ClaudeAnswer;
   run_pipeline: Run;
   list_runs: Run[];
   get_run: Run;
@@ -520,8 +713,96 @@ export const responses = {
   add_project: projectSchema,
   add_projects_batch: z.array(projectSchema),
   remove_project: z.null(),
+  remove_category: z.number(),
   save_defaults: projectSchema,
   list_workflows: z.array(workflowSchema),
+  list_category_git_access: z.array(z.object({
+    provider: gitProviderSchema, configured: z.boolean(), updatedAt: z.string().optional(),
+  })),
+  list_project_git_access: z.array(z.object({
+    provider: gitProviderSchema, configured: z.boolean(), updatedAt: z.string().optional(),
+  })),
+  put_category_git_access: z.object({
+    provider: gitProviderSchema, configured: z.boolean(), updatedAt: z.string().optional(),
+  }),
+  delete_category_git_access: z.null(),
+  put_project_git_access: z.object({
+    provider: gitProviderSchema, configured: z.boolean(), updatedAt: z.string().optional(),
+  }),
+  delete_project_git_access: z.null(),
+  list_members: z.object({ members: z.array(memberSchema), category: z.string().optional() }),
+  add_member: z.object({ members: z.array(memberSchema), category: z.string().optional() }),
+  remove_member: z.object({ members: z.array(memberSchema), category: z.string().optional() }),
+  search_jira_users: z.array(jiraUserSchema),
+  link_member_jira: z.object({ members: z.array(memberSchema), category: z.string().optional() }),
+  get_jira_config: jiraConfigSchema,
+  put_jira_config: jiraConfigSchema,
+  delete_jira_config: z.null(),
+  list_jira_projects: z.array(jiraProjectSchema),
+  create_jira_issue: jiraIssueSchema,
+  list_git_hosts: z.array(z.string()),
+  get_latest_pipelines: z.object({
+    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(),
+    pipelines: z.array(z.object({
+      id: z.number().int().positive(), branch: z.string(),
+      state: z.enum(["running", "success", "failed", "other"]),
+      url: z.string().optional(), updatedAt: z.string().optional(),
+    })),
+  }),
+  add_git_host: z.array(z.string()),
+  remove_git_host: z.array(z.string()),
+  list_branch_pipelines: z.object({
+    provider: gitProviderSchema,
+    repository: z.string(),
+    host: z.string().optional(),
+    branches: z.array(z.object({
+      id: z.number().int().positive().optional(),
+      branch: z.string(), status: z.string(), conclusion: z.string().optional(),
+      name: z.string().optional(), url: z.string().optional(), updatedAt: z.string().optional(),
+    })),
+  }),
+  delete_branch: z.object({ ok: z.boolean(), branch: z.string() }),
+  rename_branch: z.object({ ok: z.boolean(), oldBranch: z.string(), newBranch: z.string() }),
+  get_branch_pipeline_detail: z.object({
+    jobs: z.array(z.object({
+      id: z.number().int().positive(), name: z.string(), status: z.string(),
+      conclusion: z.string().optional(), failureReason: z.string().optional(), url: z.string().optional(),
+      stage: z.string().optional(),
+      steps: z.array(z.object({ number: z.number().int(), name: z.string(), status: z.string(), conclusion: z.string().optional() })),
+    })),
+  }),
+  get_branch_job_errors: z.object({ lines: z.array(z.string()), truncated: z.boolean() }),
+  list_pull_requests: z.object({
+    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), viewer: z.string().optional(),
+    pullRequests: z.array(z.object({
+  number: z.number().int().positive(), title: z.string(), author: z.string(), own: z.boolean(), draft: z.boolean(),
+  branch: z.string(), base: z.string(), url: z.string(), updatedAt: z.string(), headSha: z.string(),
+})),
+  }),
+  get_pull_request: z.object({
+  number: z.number().int().positive(), title: z.string(), author: z.string(), own: z.boolean(), draft: z.boolean(),
+  branch: z.string(), base: z.string(), url: z.string(), updatedAt: z.string(), headSha: z.string(),
+}).extend({
+    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), body: z.string(),
+    files: z.array(z.object({
+      path: z.string(), oldPath: z.string().optional(), status: z.enum(["added", "modified", "removed", "renamed"]),
+      additions: z.number().int(), deletions: z.number().int(), patch: z.string().optional(),
+    })),
+    truncated: z.boolean(),
+  }),
+  submit_pull_request_review: z.object({
+    ok: z.literal(true), decision: z.enum(["approve", "request_changes", "comment"]), url: z.string().optional(),
+  }),
+  review_pull_request_with_claude: z.object({
+    verdict: z.enum(["approve", "request_changes", "comment"]).nullable(),
+    summary: z.string(),
+    findings: z.array(z.object({
+      file: z.string().optional(), line: z.number().int().optional(),
+      severity: z.enum(["high", "medium", "low", "nit"]), comment: z.string(),
+    })),
+    reviewBody: z.string(),
+  }),
+  ask_claude_about_pull_request: z.object({ answer: z.string() }),
   run_pipeline: runSchema,
   list_runs: z.array(runSchema),
   get_run: runSchema,

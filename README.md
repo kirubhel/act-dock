@@ -36,6 +36,20 @@ Every installer bundles a pinned, checksum-verified [act](https://github.com/nek
 - Search run history and filter by project, status, source, and date, with counted pagination.
 - Copy an MCP configuration from **Agent connections**, or use the same runner through the CLI.
 
+### Remote branch pipelines
+
+For a local project with an `origin` remote on github.com or gitlab.com, choose **Project settings → Git access** to save a GitHub or GitLab token. Projects grouped under a category can also share a token through the gear icon beside the category in the sidebar. A project token takes priority over its category token. Tokens live in the system vault; SQLite holds only opaque references and timestamps.
+
+Choose **Check branches** on the project page to read the latest remote pipeline status for each branch. Select a branch to see its jobs, failed GitHub steps or GitLab stage, failure reason, and a short excerpt of error lines from failed job logs. The view covers up to 100 branches and 100 recent runs from the provider, so a branch without a recent result is labeled accordingly. This lookup does not switch the local checkout or start a remote run. Use a token with repository read access and, for GitHub, Actions read access.
+
+### Pull request review with Claude
+
+With the same token, the project page lists open pull requests (GitHub) or merge requests (GitLab). While Act Dock is open it checks every minute and notifies you when someone else opens a non-draft request or pushes new commits to one; your own requests never notify. Select one to read its description and per-file diffs.
+
+**Review with Claude** runs your installed [Claude Code](https://claude.com/claude-code) CLI on the diff with every tool disabled, so it can read but not run or change anything. It returns a summary, a suggested decision and findings, and you can ask follow-up questions. Then **Submit review…** lets you approve, send it back (request changes) or comment, optionally starting from Claude's drafted message. Nothing is posted until you click, and the review is pinned to the commit you read. Posting needs a token with pull request write access (GitHub: Pull requests read & write; GitLab: `api` scope). GitLab has no request-changes API, so it is posted as a merge request note.
+
+MCP agents can list, read, comment and request changes through `list_pull_requests`, `get_pull_request` and `submit_pull_request_review`, but only you can approve.
+
 Run configurations store file references rather than secret contents. Workflows run against current working files. The app honors managed `.actrc` preferences. Ubuntu labels resolve independently: `ubuntu-latest` and `ubuntu-24.04` use `catthehacker/ubuntu:act-24.04`, while 22.04 and legacy 20.04 use their matching tags. Medium remains the default; full/custom images are optional. This is local GitHub Actions execution with [act's supported functionality](https://nektosact.com/usage/index.html).
 
 ## Execution preferences
@@ -77,6 +91,8 @@ Windows uses `act-dock.exe`; JSON configurations must escape backslashes. No Bun
 | `get_run` | Inspect status and results |
 | `get_run_logs` | Read logs with reconnect cursors |
 | `cancel_run` | Cancel queued or active work |
+| `list_pull_requests`, `get_pull_request` | Read open GitHub pull requests / GitLab merge requests and their per-file diffs (needs a token in Git access settings) |
+| `submit_pull_request_review` | **Mutating:** post a comment or request changes as the user. Agents cannot approve; the user approves in the app |
 | `check_health` | Check Docker, the act engine, the job image, disk space, and GitHub access, with a fix for each problem |
 | `get_capabilities`, `get_runner_snapshot` | Negotiate features and begin an event subscription |
 | `preflight_run` | Preview effective setup, provenance, dependencies, images, caches and secret names |

@@ -153,6 +153,27 @@ export class Store {
       );
     this.db.query("DELETE FROM projects WHERE id=?").run(id);
   }
+  removeCategory(category: string) {
+    const ids = (
+      this.db.query("SELECT data FROM projects").all() as { data: string }[]
+    )
+      .map((r) => JSON.parse(r.data) as Project)
+      .filter((p) => p.category?.trim() === category.trim())
+      .map((p) => p.id);
+    const busy = new Set(
+      this.runs()
+        .filter((r) => activeStates.includes(r.state))
+        .map((r) => r.request.projectId),
+    );
+    if (ids.some((id) => busy.has(id)))
+      throw new AppError(
+        "PROJECT_BUSY",
+        "Cancel queued and active runs before removing this category.",
+      );
+    for (const id of ids) this.db.query("DELETE FROM projects WHERE id=?").run(id);
+    if (ids.length) this.emit("projects", null, {});
+    return ids.length;
+  }
   runs(): Run[] {
     return (
       this.db

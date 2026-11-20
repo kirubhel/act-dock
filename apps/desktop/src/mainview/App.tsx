@@ -3,6 +3,8 @@ import brandMark from "../../assets/brand/pipeline-loop.png";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThemeProvider, useTheme } from "next-themes";
 import { toast } from "sonner";
+import { announce, useRemotePipelineWatch } from "@/lib/remote-watch";
+import { announcePullRequest, usePullRequestWatch } from "@/lib/pr-watch";
 import {
   createLogReader,
   parseJobStatusesFromLogs,
@@ -25,10 +27,13 @@ import {
   ArrowUpRight,
   CircleCheck,
   CircleX,
+  GitPullRequest,
   LoaderCircle,
   Trash2,
   Terminal,
   Activity,
+  ListTodo,
+  Users,
 } from "lucide-react";
 import {
   SidebarProvider,
@@ -71,6 +76,10 @@ import {
 } from "@/components/project-settings";
 import { api, openExternal } from "@/lib/api";
 import { AddProjectDialog } from "@/components/add-project-dialog";
+import { BranchPipelinePanel, GitAccessSettings, RemotePipelineView, type RemoteSelection } from "@/components/git-access";
+import { CreateJiraTaskDialog, TeamSettings } from "@/components/team";
+import { PullRequestPanel, PullRequestReview, type PullRequestSelection } from "@/components/pull-requests";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   RunHistory,
   defaultHistoryOptions,
@@ -111,7 +120,9 @@ function Workspace() {
     [discoveredWorkflows, setWorkflows] = useState<Workflow[]>([]);
   const [selected, setSelected] = useState<string | null>(null),
     [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null),
-    [selectedRun, setSelectedRun] = useState<Run | null>(null);
+    [selectedRun, setSelectedRun] = useState<Run | null>(null),
+    [remoteSel, setRemoteSel] = useState<RemoteSelection | null>(null),
+    [prSel, setPrSel] = useState<PullRequestSelection | null>(null);
   const [settings, setSettings] = useState<Settings>(settingsSchema.parse({})),
     [health, setHealth] = useState<Health | null>(null),
     [view, setView] = useState<View>("project"),
@@ -123,6 +134,9 @@ function Workspace() {
     setView("settings");
   };
   const [workflowError, setWorkflowError] = useState("");
+  const [gitCategory, setGitCategory] = useState<string | null>(null);
+  const [teamCategory, setTeamCategory] = useState<string | null>(null);
+  const [jiraOpen, setJiraOpen] = useState(false);
   const { isMobile, setOpenMobile } = useSidebar();
   function closeNavigation() {
     if (isMobile) setOpenMobile(false);
@@ -137,6 +151,7 @@ function Workspace() {
       initialJobId?: string;
     } | null>(null),
     [remove, setRemove] = useState<Project | null>(null),
+    [removeCategory, setRemoveCategory] = useState<{ name: string; count: number } | null>(null),
     [runnerStopped, setRunnerStopped] = useState(false),
     [mobileRun, setMobileRun] = useState(false);
   const { setTheme } = useTheme();
@@ -430,6 +445,7 @@ function Workspace() {
   function selectProject(p: Project) {
     closeNavigation();
     if (p.id !== selected) {
+      setPrSel(null);
       setWorkflows([]);
       setSelectedWorkflow(null);
       setWorkflowError("");
@@ -444,10 +460,28 @@ function Workspace() {
   }
   function showRun(r: Run) {
     closeNavigation();
+    setRemoteSel(null);
+    setPrSel(null);
     setSelectedRun(r);
     setMobileRun(true);
     if (!runnerStopped) void refresh();
   }
+  const remoteStatus = useRemotePipelineWatch(projects, (project, pipeline) => {
+    const { title, body, ok } = announce(project, pipeline);
+    (ok ? toast.success : toast.error)(title, { description: body });
+  });
+  function openPullRequest(project: Project, number: number) {
+    closeNavigation();
+    setView("project");
+    setSelected(project.id);
+    setRemoteSel(null);
+    setPrSel({ projectId: project.id, number });
+    setMobileRun(true);
+  }
+  const reviewsWaiting = usePullRequestWatch(projects, (project, pr, event) => {
+    const { title, body } = announcePullRequest(project, pr, event);
+    toast(title, { description: body, duration: 15000, action: { label: "Review", onClick: () => openPullRequest(project, pr.number) } });
+  });
   const active = runs.filter((r) => activeStates.includes(r.state));
   const running = runs.filter((r) => r.state === "running");
   const queued = runs.filter((r) => r.state === "queued");
@@ -541,6 +575,24 @@ function Workspace() {
                             <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-muted/60 text-muted-foreground shrink-0 ml-auto">
                               {group.items.length}
                             </span>
+                            <button type="button" aria-label={`Members of ${group.category}`} title="Group members"
+                              className="text-muted-foreground hover:text-foreground p-1"
+                              onClick={(event) => { event.stopPropagation(); setTeamCategory(group.category); }}
+                              onKeyDown={(event) => event.stopPropagation()}>
+                              <Users className="size-3.5" />
+                            </button>
+                            <button type="button" aria-label={`Git access for ${group.category}`} title="Group Git access"
+                              className="text-muted-foreground hover:text-foreground p-1"
+                              onClick={(event) => { event.stopPropagation(); setGitCategory(group.category); }}
+                              onKeyDown={(event) => event.stopPropagation()}>
+                              <SettingsIcon className="size-3.5" />
+                            </button>
+                            <button type="button" aria-label={`Remove all projects in ${group.category}`} title="Remove all projects in this category"
+                              className="text-muted-foreground hover:text-destructive p-1"
+                              onClick={(event) => { event.stopPropagation(); setRemoveCategory({ name: group.category, count: group.items.length }); }}
+                              onKeyDown={(event) => event.stopPropagation()}>
+                              <Trash2 className="size-3.5" />
+                            </button>
                           </div>
                         )}
 
@@ -572,6 +624,40 @@ function Workspace() {
                                     }
                                   />
                                   <span className="truncate">{p.name}</span>
+                                  {!!reviewsWaiting[p.id] && (
+                                    <span className="ml-1.5 flex items-center gap-0.5 text-[10px] text-muted-foreground"
+                                      title={`${reviewsWaiting[p.id]} open pull request${reviewsWaiting[p.id] === 1 ? "" : "s"} to review`}
+                                      aria-label={`${reviewsWaiting[p.id]} to review`}>
+                                      <GitPullRequest className="size-3" aria-hidden />{reviewsWaiting[p.id]}
+                                    </span>
+                                  )}
+                                  {!runs.some(
+                                    (r) =>
+                                      r.request.projectId === p.id &&
+                                      r.state === "running",
+                                  ) && remoteStatus[p.id]?.state === "running" && (
+                                    <span className="ml-auto flex items-center gap-1 text-[10px] running-foreground"
+                                      title={`Deploying ${remoteStatus[p.id].branch}`}>
+                                      <LoaderCircle className="size-3 animate-spin" aria-hidden />
+                                      Deploying
+                                    </span>
+                                  )}
+                                  {!runs.some(
+                                    (r) =>
+                                      r.request.projectId === p.id &&
+                                      r.state === "running",
+                                  ) && remoteStatus[p.id]?.state === "success" && (
+                                    <CircleCheck className="ml-auto size-3.5 text-emerald-500"
+                                      aria-label={`Latest pipeline succeeded on ${remoteStatus[p.id].branch}`} />
+                                  )}
+                                  {!runs.some(
+                                    (r) =>
+                                      r.request.projectId === p.id &&
+                                      r.state === "running",
+                                  ) && remoteStatus[p.id]?.state === "failed" && (
+                                    <CircleX className="ml-auto size-3.5 text-red-500"
+                                      aria-label={`Latest pipeline failed on ${remoteStatus[p.id].branch}`} />
+                                  )}
                                   {runs.some(
                                     (r) =>
                                       r.request.projectId === p.id &&
@@ -813,6 +899,11 @@ function Workspace() {
                 </div>
                 <div className="flex items-center">
                   {project && (
+                    <IconButton label="Create Jira task" onClick={() => setJiraOpen(true)}>
+                      <ListTodo className="size-4" />
+                    </IconButton>
+                  )}
+                  {project && (
                     <IconButton
                       label="Project settings"
                       onClick={() => setView("project-settings")}
@@ -839,6 +930,8 @@ function Workspace() {
                   )}
                 </div>
               </div>
+              {project && <PullRequestPanel project={project} selected={prSel?.projectId === project.id ? prSel.number : null} onSelect={(sel) => { setPrSel(sel); if (sel) { setRemoteSel(null); setMobileRun(true); } }} onConfigure={() => { setProjectTab("git"); setView("project-settings"); }} />}
+              {project && <BranchPipelinePanel project={project} selected={remoteSel?.projectId === project.id ? remoteSel.branch.branch : null} onSelect={(sel) => { setRemoteSel(sel); if (sel) { setPrSel(null); setMobileRun(true); } }} onConfigure={() => { setProjectTab("git"); setView("project-settings"); }} />}
               {project && (
                 <div className="workflow-search">
                   <div className="search-input">
@@ -1134,11 +1227,17 @@ function Workspace() {
                   </Button>
                 )}
             </section>
-            <RunDetail
-              run={runnerStopped ? null : selectedRun}
-              onRun={showRun}
-              onBack={() => setMobileRun(false)}
-            />
+            {prSel && project && prSel.projectId === project.id ? (
+              <PullRequestReview selection={prSel} project={project} onClose={() => setPrSel(null)} />
+            ) : remoteSel && remoteSel.projectId === project?.id ? (
+              <RemotePipelineView selection={remoteSel} onClose={() => setRemoteSel(null)} />
+            ) : (
+              <RunDetail
+                run={runnerStopped ? null : selectedRun}
+                onRun={showRun}
+                onBack={() => setMobileRun(false)}
+              />
+            )}
           </div>
         )}
         {view === "history" && (
@@ -1252,6 +1351,25 @@ function Workspace() {
           onAdded={addedProject}
         />
       )}
+      <Dialog open={!!gitCategory} onOpenChange={(open) => { if (!open) setGitCategory(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Git access for {gitCategory}</DialogTitle>
+            <DialogDescription>Share a Git access token with projects in this category. A project token takes priority.</DialogDescription>
+          </DialogHeader>
+          {gitCategory && <GitAccessSettings scope={{ category: gitCategory }} />}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!teamCategory} onOpenChange={(open) => { if (!open) setTeamCategory(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Members of {teamCategory}</DialogTitle>
+            <DialogDescription>People added here are on every project in this group.</DialogDescription>
+          </DialogHeader>
+          {teamCategory && <TeamSettings scope={{ category: teamCategory }} />}
+        </DialogContent>
+      </Dialog>
+      {project && jiraOpen && <CreateJiraTaskDialog project={project} onClose={() => setJiraOpen(false)} />}
       {project && runWorkflow && (
         <RunDialog
           key={runWorkflow.workflow.path + (runWorkflow.initialJobId || "")}
@@ -1293,6 +1411,40 @@ function Workspace() {
               }}
             >
               Remove project
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={!!removeCategory}
+        onOpenChange={(open) => {
+          if (!open) setRemoveCategory(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove all {removeCategory?.count} projects in {removeCategory?.name}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes every project in this category from Act Dock. Project
+              files and saved run history are kept.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep projects</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (removeCategory)
+                  void api("remove_category", { category: removeCategory.name })
+                    .then(() => {
+                      setRemoveCategory(null);
+                      void refresh();
+                    })
+                    .catch((e) => toast.error(fail(e)));
+              }}
+            >
+              Remove all
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

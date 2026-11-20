@@ -10,7 +10,7 @@ Developers and their local AI agents run GitHub Actions against local working fi
 Saved local projects, workflow/job discovery, manual inputs, file-based environment/secrets, FIFO execution, cancellation, persisted history, CLI and MCP stdio. Agents may register any local folder and run without per-run prompts. Closing the desktop app preserves runs. On-demand startup is default; macOS login startup is optional.
 
 ## Constraints
-Electrobun 2.0.5 and Hutch; shadcn/ui components; grayscale light/dark themes following the system by default, with green reserved for actively running pipelines. System fonts, accessible keyboard controls, and labeled status icons. No workflow editor, remote runners, hosted service, or GitHub login. Signing and notarization are outside v1.
+Electrobun 2.0.5 and Hutch; shadcn/ui components; grayscale light/dark themes following the system by default, with green reserved for actively running pipelines. System fonts, accessible keyboard controls, and labeled status icons. No workflow editor, remote runners, hosted service, or account login. Optional GitHub and GitLab tokens allow branch pipeline lookups and pull/merge request review. Signing and notarization are outside v1.
 
 ## Bundled engine
 act is shipped inside every installer (pinned version, checksum-verified at build time, MIT license included) and installed beside the runner. Resolution order: a custom act path from Settings, then the bundled engine, then the system act. Docker is the only external dependency.
@@ -20,6 +20,9 @@ Projects are selected using the native folder picker or the built-in folder brow
 
 ## Running feedback
 Running workflows have a green animated outline, visible Running label, green status/count indicators, and a pinned current-step summary above output. Highlight the current step's log section while retaining readable neutral text. Parallel and nested steps follow act's lifecycle messages. Completed, queued, and cancelling runs use neutral status treatments. Reduced motion preserves the green outline without animation.
+
+## Pull request review
+While the app is open it polls each project's open pull/merge requests (60 s) and notifies when someone else's non-draft PR is opened or gets new commits; the first poll is a silent baseline. Opening a PR shows its description and per-file diffs. "Review with Claude" runs the user's local Claude Code CLI headlessly with every tool disabled, an empty working directory and no saved session; the PR text is treated as untrusted. The user can ask follow-up questions, then approve, send back (request changes) or comment from a dialog that always needs an explicit click and, for send back and comment, a message. Claude's draft message can prefill it. Posting uses the saved project/category token, so it needs write access to pull requests; a rejected token shows the provider's error. GitLab has no REST "request changes", so it is posted as a merge request note. Agents (MCP) can list, read, comment and request changes, but cannot approve.
 
 ## Distribution and releases
 The personal repository is MohammedIbrahim8887/act-dock. Public downloads live on GitHub Releases and are linked from https://act-dock.mohammedibrahim.dev. Packages include DMG, Windows installer, DEB, RPM, and AppImage. Native macOS and Linux startup can be checked locally; Windows GUI verification requires a Windows host. Main releases use a self-hosted runner on the owner's Mac, run checks through Act Dock, select a new patch version, publish installers and a checksummed manifest, and deploy the site without GitHub-hosted Actions minutes.

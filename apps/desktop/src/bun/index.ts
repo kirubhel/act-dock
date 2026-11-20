@@ -64,12 +64,13 @@ const rpc = BrowserView.defineRPC<DesktopRPC>({
             ok: true as const,
             data: await call(method, params || {}, "desktop"),
           };
-        } catch (e) {
+        } catch (e: any) {
+          console.error("[desktop-service-rpc-error]", method, e);
           return {
             ok: false as const,
             error: {
-              code: e instanceof AppError ? e.code : "ERROR",
-              message: errorMessage(e),
+              code: e?.code || (e instanceof AppError ? e.code : "ERROR"),
+              message: e?.message || errorMessage(e),
             },
           };
         }
@@ -92,6 +93,17 @@ const rpc = BrowserView.defineRPC<DesktopRPC>({
         )[0] || null,
       openExternal: async ({ url }) =>
         /^https:\/\//.test(url) ? Utils.openExternal(url) : false,
+      notify: async ({ title, body }) => {
+        const text = (value: string) => String(value).replace(/[\u0000-\u001f]/g, " ").slice(0, 200);
+        try {
+          if (process.platform === "darwin")
+            Bun.spawn(["osascript", "-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", text(title), text(body)], { stdout: "ignore", stderr: "ignore" });
+          else if (process.platform === "linux")
+            Bun.spawn(["notify-send", "--", text(title), text(body)], { stdout: "ignore", stderr: "ignore" });
+          else return false;
+          return true;
+        } catch { return false; }
+      },
       revealPath: async ({ path }) => {
         Utils.showItemInFolder(path);
         return true;

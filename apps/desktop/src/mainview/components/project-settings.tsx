@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
   Trash2,
   Upload,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,8 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog";
 import { api, chooseFile } from "@/lib/api";
+import { GitAccessSettings } from "./git-access";
+import { TeamSettings } from "./team";
 import { subscribeEvents } from "@/lib/events";
 import { fail } from "./common";
 import {
@@ -64,13 +67,17 @@ export type ProjectSettingsTab =
   | "images"
   | "behavior"
   | "caches"
-  | "secrets";
+  | "secrets"
+  | "git"
+  | "team";
 const tabFields: Record<ProjectSettingsTab, (keyof ExecutionOptions)[]> = {
   overview: [],
   images: ["runnerMappings", "imagePullPolicy"],
   behavior: ["workspaceMode", "concurrentJobs", "reservation"],
   caches: ["actionCachePolicy", "packageCaches"],
   secrets: [],
+  git: [],
+  team: [],
 };
 /** Secret grants are saved by the runner itself, so they never live in the draft. */
 function editable(execution?: ExecutionOptions): ExecutionOptions {
@@ -187,6 +194,8 @@ export function ProjectSettingsView({
     ["behavior", "Run behavior", SlidersHorizontal],
     ["caches", "Caches", HardDrive],
     ["secrets", "Secrets & env", KeyRound],
+    ["git", "Git access", KeyRound],
+    ["team", "Team & Jira", Users],
   ];
   return (
     <div className="page-content settings-page">
@@ -286,6 +295,13 @@ export function ProjectSettingsView({
                   })
                 }
               />
+            </TabsContent>
+            <TabsContent value="git">
+              <GitAccessSettings scope={{ projectId: project.id }} />
+              {project.category && <p className="field-help">This project belongs to {project.category}. If no project token is saved, its category token is used.</p>}
+            </TabsContent>
+            <TabsContent value="team">
+              <TeamSettings scope={{ projectId: project.id }} />
             </TabsContent>
           </>
         )}

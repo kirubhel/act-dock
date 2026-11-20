@@ -19,6 +19,7 @@ import {
   type Method,
   type Results,
   type Run,
+  requestTimeoutMs,
 } from "../shared/contracts";
 import { dataDir, executablePath, bundledActPath, preparePaths } from "./paths";
 import { localRequest } from "./transport";
@@ -46,7 +47,7 @@ export async function request<M extends Method>(
     requireFeature(feature, capabilities);
   }
   const result = serviceReplySchema.parse(
-    await localRequest({ method, params, source }),
+    await localRequest({ method, params, source }, requestTimeoutMs(method)),
   );
   if (!result.ok) throw new AppError(result.error.code, result.error.message);
   return parseResponse(method, result.data);

@@ -2,6 +2,7 @@ import { requiredFeature, requireFeature } from "../../shared/capabilities";
 import {
   AppError,
   parseResponse,
+  requestTimeoutMs,
   serviceReplySchema,
   type Method,
   type Results,
@@ -47,7 +48,8 @@ export async function api<M extends Method>(
     requireFeature(feature, capabilities);
   }
   const reply: ServiceReply = isDesktop()
-    ? await (await connection()).rpc!.request.service({ method, params })
+    ? await (await connection()).rpc!.request.service({ method, params },
+        { maxRequestTime: requestTimeoutMs(method) ?? 30000 })
     : await fetch("/__actdock/rpc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -107,6 +109,11 @@ export async function openExternal(url: string) {
   if (isDesktop())
     await (await connection()).rpc!.request.openExternal({ url });
   else window.open(url, "_blank", "noopener");
+}
+export async function notify(title: string, body: string) {
+  if (isDesktop()) return (await connection()).rpc!.request.notify({ title, body });
+  if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body });
+  return false;
 }
 export async function revealPath(path: string) {
   if (isDesktop()) await (await connection()).rpc!.request.revealPath({ path });

@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { nativeHelper } from "./native-helper";
 import { socketPath, tokenPath } from "./paths";
 
-export function localRequest(body: unknown): Promise<unknown> {
+export function localRequest(body: unknown, timeoutMs = 15000): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let token = "";
     try {
@@ -33,7 +33,7 @@ export function localRequest(body: unknown): Promise<unknown> {
         });
       },
     );
-    req.setTimeout(15000, () =>
+    req.setTimeout(timeoutMs, () =>
       req.destroy(new Error("Runner request timed out")),
     );
     req.on("error", reject);

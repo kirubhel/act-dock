@@ -13,6 +13,7 @@ export type DesktopRPC = {
       exportLogs: { params: { runId: string }; response: string | null };
       restartRunner: { params: {}; response: boolean };
       openExternal: { params: { url: string }; response: boolean };
+      notify: { params: { title: string; body: string }; response: boolean };
       revealPath: { params: { path: string }; response: boolean };
       getUpdateState: { params: {}; response: UpdateState };
       checkForUpdates: { params: {}; response: UpdateState };

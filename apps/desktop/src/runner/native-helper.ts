@@ -29,8 +29,9 @@ export function helperPath() {
 }
 export async function nativeHelper<T = unknown>(
   request: Record<string, unknown>,
-  timeout = 15000,
+  timeout?: number,
 ): Promise<T> {
+  const opTimeout = timeout ?? (String(request.op).startsWith("vault_") ? 60000 : 15000);
   const input = JSON.stringify(request);
   if (Buffer.byteLength(input) > 8 * 1024 * 1024)
     throw new AppError(
@@ -63,7 +64,7 @@ export async function nativeHelper<T = unknown>(
             : "The native operation timed out. Check the system vault or network, then retry.",
         ),
       );
-    }, timeout);
+    }, opTimeout);
     child.once("error", () =>
       finish(
         new AppError(
