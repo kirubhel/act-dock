@@ -52,7 +52,7 @@ const updater = new DesktopUpdater({
   },
   fetch,
 });
-updater.start();
+// Update checks are off: the release feed points at the upstream project, not this build.
 const bundled = join(PATHS.RESOURCES_FOLDER, "app", process.platform === "win32" ? "act-dock.exe" : "act-dock");
 if (existsSync(bundled)) await installRunner(bundled);
 const rpc = BrowserView.defineRPC<DesktopRPC>({

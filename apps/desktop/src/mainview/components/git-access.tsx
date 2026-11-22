@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, GitBranch, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, GitBranch, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -125,6 +125,8 @@ export function GitAccessSettings({ scope }: { scope: Scope }) {
 export type RemoteSelection = { projectId: string; provider: GitProvider; host?: string; repository: string; branch: BranchPipelines["branches"][number] };
 
 type BranchFilter = "all" | "with-pipeline" | "no-pipeline";
+const COLLAPSED_KEY = "act-dock.branch-pipelines-collapsed";
+const readCollapsed = () => { try { return localStorage.getItem(COLLAPSED_KEY) === "1"; } catch { return false; } };
 
 export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }: {
   project: Project; onConfigure: () => void; selected: string | null; onSelect: (selection: RemoteSelection | null) => void;
@@ -138,7 +140,12 @@ export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }
   const [renamingBranch, setRenamingBranch] = useState<string | null>(null);
   const [newBranchName, setNewBranchName] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
   const request = useRef(0);
+  function toggle(next: boolean) {
+    setCollapsed(next);
+    try { localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0"); } catch { /* the choice just won't persist */ }
+  }
 
   async function load() {
     const current = ++request.current;
@@ -160,6 +167,10 @@ export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }
   const branches = data?.branches || [];
   const withPipelineCount = useMemo(() => branches.filter((b) => b.id).length, [branches]);
   const noPipelineCount = useMemo(() => branches.length - withPipelineCount, [branches, withPipelineCount]);
+  const failedCount = useMemo(
+    () => branches.filter((b) => ["failed", "failure", "timed_out", "startup_failure"].includes(b.conclusion || b.status)).length,
+    [branches],
+  );
 
   const filteredBranches = useMemo(() => {
     return branches.filter((b) => {
@@ -206,15 +217,25 @@ export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }
   return (
     <section className="branch-pipelines border border-border rounded-lg p-3 space-y-2.5">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="font-medium text-sm flex items-center gap-1.5">
-          <GitBranch className="size-4 text-muted-foreground" />
-          Remote branch pipelines
+        <h2 className="font-medium text-sm min-w-0">
+          <button type="button" className="flex items-center gap-1.5 text-left rounded focus-visible:outline-2 focus-visible:outline-ring"
+            aria-expanded={!collapsed} aria-controls="branch-pipelines-body" onClick={() => toggle(!collapsed)}>
+            {collapsed ? <ChevronRight className="size-4 shrink-0 text-muted-foreground" /> : <ChevronDown className="size-4 shrink-0 text-muted-foreground" />}
+            <GitBranch className="size-4 shrink-0 text-muted-foreground" />
+            <span>Remote branch pipelines</span>
+            {collapsed && data && (
+              <span className="text-xs font-normal text-muted-foreground">
+                · {branches.length} branches{failedCount ? ` · ${failedCount} failed` : ""}
+              </span>
+            )}
+          </button>
         </h2>
-        <Button size="sm" variant="ghost" disabled={loading} onClick={() => void load()}>
+        <Button size="sm" variant="ghost" disabled={loading} onClick={() => { toggle(false); void load(); }}>
           <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} /> Check branches
         </Button>
       </div>
 
+      <div id="branch-pipelines-body" hidden={collapsed} className="space-y-2.5">
       {error && (
         <div className="space-y-1">
           <p className="form-error" role="alert">{error}</p>
@@ -357,6 +378,7 @@ export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }
           )}
         </>
       )}
+      </div>
 
       {/* Delete Branch Confirmation Dialog */}
       <AlertDialog open={!!deletingBranch} onOpenChange={(open) => { if (!open && !actionBusy) setDeletingBranch(null); }}>

@@ -5,6 +5,8 @@ import { ThemeProvider, useTheme } from "next-themes";
 import { toast } from "sonner";
 import { announce, useRemotePipelineWatch } from "@/lib/remote-watch";
 import { announcePullRequest, usePullRequestWatch } from "@/lib/pr-watch";
+import { ResizeHandle } from "@/components/resize-handle";
+import { LayoutProvider, SIDEBAR_MAX, SIDEBAR_MIN, useLayout } from "@/lib/layout";
 import {
   createLogReader,
   parseJobStatusesFromLogs,
@@ -88,7 +90,6 @@ import {
 import { RunDialog } from "@/components/run-dialog";
 import { RunDetail } from "@/components/run-detail";
 import { SettingsView, AgentsView, type SettingsTab } from "@/components/settings";
-import { UpdateBadge, UpdateBanner, useUpdates } from "@/components/updates";
 import { Empty, IconButton, RunningBorder, fail } from "@/components/common";
 import {
   HealthBanner,
@@ -128,16 +129,14 @@ function Workspace() {
     [view, setView] = useState<View>("project"),
     [projectTab, setProjectTab] = useState<ProjectSettingsTab>("overview"),
     [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
-  const updates = useUpdates();
-  const openUpdates = () => {
-    setSettingsTab("updates");
-    setView("settings");
-  };
   const [workflowError, setWorkflowError] = useState("");
   const [gitCategory, setGitCategory] = useState<string | null>(null);
   const [teamCategory, setTeamCategory] = useState<string | null>(null);
   const [jiraOpen, setJiraOpen] = useState(false);
   const { isMobile, setOpenMobile } = useSidebar();
+  const { sidebar, setSidebar, workflow: workflowWidth, setWorkflow: setWorkflowWidth } = useLayout();
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const workflowPaneRef = useRef<HTMLElement>(null);
   function closeNavigation() {
     if (isMobile) setOpenMobile(false);
   }
@@ -816,10 +815,13 @@ function Workspace() {
                   ? "Runner unavailable"
                   : "Local runner"}
             </span>
-            <UpdateBadge updates={updates} onOpen={openUpdates} />
-            <span className={updates.state && ["available", "downloading", "ready"].includes(updates.state.status) ? undefined : "ml-auto"}>v{APP_VERSION}</span>
+            <span className="ml-auto">v{APP_VERSION}</span>
           </div>
         </SidebarFooter>
+        {!isMobile && (
+          <ResizeHandle label="Resize sidebar" measure={() => sidebar} min={SIDEBAR_MIN}
+            max={() => Math.min(SIDEBAR_MAX, window.innerWidth * 0.5)} onChange={setSidebar} onReset={() => setSidebar(null)} />
+        )}
       </Sidebar>
       <SidebarInset className="app-main">
         <header className="topbar">
@@ -878,7 +880,6 @@ function Workspace() {
             </Button>
           </div>
         )}
-        <UpdateBanner updates={updates} onOpen={openUpdates} />
         {!error && !runnerStopped && view !== "health" && (
           <HealthBanner
             report={report}
@@ -888,8 +889,11 @@ function Workspace() {
           />
         )}
         {view === "project" && (
-          <div className={`workspace ${mobileRun ? "show-run" : ""}`}>
-            <section className="workflow-pane">
+          <div ref={workspaceRef} className={`workspace ${mobileRun ? "show-run" : ""}`}
+            style={workflowWidth ? { "--workflow-col": `minmax(280px, min(${workflowWidth}px, calc(100% - 340px)))` } as React.CSSProperties : undefined}>
+            <section ref={workflowPaneRef} className="workflow-pane">
+              <ResizeHandle label="Resize workflow list" measure={() => workflowPaneRef.current?.offsetWidth ?? 0} min={280}
+                max={() => Math.max(280, (workspaceRef.current?.clientWidth ?? 0) - 340)} onChange={setWorkflowWidth} onReset={() => setWorkflowWidth(null)} />
               <div className="project-heading">
                 <div>
                   <h1>{project?.name || "Your projects"}</h1>
@@ -1293,7 +1297,6 @@ function Workspace() {
               health={health}
               tab={settingsTab}
               onTab={setSettingsTab}
-              updates={updates}
               onSaved={(s) => {
                 setSettings(s);
                 setTheme(s.theme);
@@ -1453,6 +1456,14 @@ function Workspace() {
     </>
   );
 }
+function AppFrame() {
+  const { sidebar } = useLayout();
+  return (
+    <SidebarProvider style={{ "--sidebar-width": `${sidebar}px` } as React.CSSProperties}>
+      <Workspace />
+    </SidebarProvider>
+  );
+}
 export default function App() {
   return (
     <ThemeProvider
@@ -1462,11 +1473,9 @@ export default function App() {
       disableTransitionOnChange
     >
       <TooltipProvider delayDuration={300}>
-        <SidebarProvider
-          style={{ "--sidebar-width": "232px" } as React.CSSProperties}
-        >
-          <Workspace />
-        </SidebarProvider>
+        <LayoutProvider>
+          <AppFrame />
+        </LayoutProvider>
       </TooltipProvider>
     </ThemeProvider>
   );

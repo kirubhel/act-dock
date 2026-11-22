@@ -330,11 +330,12 @@
 }
 .workspace {
   display: grid;
-  grid-template-columns: minmax(320px, 39%) minmax(0, 1fr);
+  grid-template-columns: var(--workflow-col, minmax(320px, 39%)) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
 .workflow-pane {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1114,7 +1115,7 @@ blockquote {
 }
 @media (max-width: 1100px) {
   .workspace {
-    grid-template-columns: minmax(300px, 42%) minmax(0, 1fr);
+    grid-template-columns: var(--workflow-col, minmax(300px, 42%)) minmax(0, 1fr);
   }
   .topbar-meta {
     display: none;
@@ -3533,4 +3534,43 @@ summary:focus-visible {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Drag handles between panes. Wide hit area, thin visible line. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -5px;
+  width: 10px;
+  z-index: 30;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background-color 0.15s;
+}
+.resize-handle:hover::after,
+.resize-handle:focus-visible::after,
+body.is-resizing .resize-handle::after {
+  background: var(--ring);
+}
+body.is-resizing,
+body.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  transition: none !important;
+}
+@media (max-width: 900px) {
+  .workflow-pane > .resize-handle {
+    display: none;
+  }
 }
