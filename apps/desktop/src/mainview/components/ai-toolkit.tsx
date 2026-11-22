@@ -59,6 +59,8 @@ export function AiToolkitView() {
   const [applying, setApplying] = useState(false);
   const [filter, setFilter] = useState("");
   const [category, setCategory] = useState<string>("all");
+  // Which copy to keep in each duplicate group; unset means the scan's suggestion.
+  const [keep, setKeep] = useState<Record<string, string>>({});
   const generation = useRef(0);
 
   const scan = useCallback(async () => {
@@ -67,7 +69,7 @@ export function AiToolkitView() {
     try {
       const inv = await api("scan_ai_inventory", {});
       if (mine !== generation.current) return;
-      setInventory(inv); setSelected(new Set()); setUsage(null); setUsageNotes([]);
+      setInventory(inv); setSelected(new Set()); setKeep({}); setUsage(null); setUsageNotes([]);
       // Finding which apps use each model reads many files, so it follows the scan instead of delaying it.
       void api("scan_ai_usage", {}).then((report) => { if (mine === generation.current) { setUsage(report.usage); setUsageNotes(report.notes); } }).catch(() => { if (mine === generation.current) setUsage({}); });
     } catch (e) { setError(fail(e)); }
@@ -121,11 +123,9 @@ export function AiToolkitView() {
   const brokenCount = (inventory?.skills ?? []).filter((s) => s.broken).length;
   const dupSavings = (inventory?.duplicates ?? []).reduce((a, d) => a + d.reclaimBytes, 0);
 
-  function selectDuplicates(group: AiDuplicateGroup) {
-    const ids = group.itemIds.filter((id) => id !== group.keepId && byId.get(id) && (byId.get(id) as { removable?: boolean }).removable !== false);
-    setSelected((prev) => new Set([...prev, ...ids]));
-    toast(`${ids.length} copy${ids.length === 1 ? "" : "ies"} selected. Review them, then choose "Move to Trash".`);
-  }
+  const keptIn = (g: AiDuplicateGroup) => keep[g.id] ?? g.keepId ?? g.itemIds[0];
+  const removableIn = (id: string) => (byId.get(id) as { removable?: boolean } | undefined)?.removable !== false && byId.has(id);
+  const othersIn = (g: AiDuplicateGroup) => g.itemIds.filter((id) => id !== keptIn(g) && removableIn(id));
 
   /** Skills in view that a tool does not have yet, so a whole category can be installed in one step. */
   const missingFor = (target: AiInstallTarget) => visibleGroups.filter((g) => g.source && g.source.tool !== target && !g.entries.some((e) => e.tool === target && !e.broken));
@@ -307,12 +307,30 @@ export function AiToolkitView() {
                       <div className="ai-row-title"><strong>{g.name}</strong><Badge variant={g.verdict === "identical" ? "secondary" : "outline"}>{g.verdict}</Badge><Badge variant="outline">{g.subject}</Badge></div>
                       <p className="ai-row-desc">{g.note}</p>
                       <ul className="ai-dup-items">
-                        {g.itemIds.map((id) => { const it = byId.get(id); return it && <li key={id}><span className="mono" title={it.path}>{it.path}</span>{id === g.keepId && <Badge variant="secondary">keep</Badge>}<span className="ai-size">{bytesLabel(it.bytes)}</span></li>; })}
+                        {g.itemIds.map((id) => {
+                          const it = byId.get(id);
+                          if (!it) return null;
+                          const kept = keptIn(g) === id;
+                          return (
+                            <li key={id} data-kept={kept || undefined}>
+                              <label className="ai-keep" title="Keep this copy and remove the others">
+                                <input type="radio" name={`keep-${g.id}`} checked={kept} onChange={() => setKeep((prev) => ({ ...prev, [g.id]: id }))} />
+                                <span>{kept ? "Keep" : "Keep this"}</span>
+                              </label>
+                              <span className="mono" title={it.path}>{it.path}</span>
+                              <span className="ai-size">{bytesLabel(it.bytes)}</span>
+                              <Button size="icon" variant="ghost" className="size-6" disabled={!removableIn(id)} aria-label={`Remove ${it.path}`} title={removableIn(id) ? "Move just this copy to the Trash" : "Cannot be removed here"}
+                                onClick={() => void preview({ kind: "remove", ids: [id], loading: true })}><Trash2 className="size-3.5" /></Button>
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                     <div className="ai-row-side">
                       <span className="ai-size">{g.reclaimBytes > 0 ? `${bytesLabel(g.reclaimBytes)} to reclaim` : "no space to reclaim"}</span>
-                      {g.keepId && g.verdict === "identical" && <Button size="sm" variant="outline" onClick={() => selectDuplicates(g)}>Select the extra copies</Button>}
+                      <Button size="sm" variant="outline" disabled={!othersIn(g).length} onClick={() => void preview({ kind: "remove", ids: othersIn(g), loading: true })}>
+                        <Trash2 className="size-3.5" />Keep one, remove {othersIn(g).length} other{othersIn(g).length === 1 ? "" : "s"}…
+                      </Button>
                     </div>
                   </li>
                 ))}

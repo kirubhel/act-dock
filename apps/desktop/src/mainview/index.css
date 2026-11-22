@@ -3634,3 +3634,7 @@ body.is-resizing * {
   .ai-skill-row > .ai-row-main { grid-column: 1 / -1; }
   .ai-matrix-cell::before { content: attr(data-label); width: 100%; font-size: 10.5px; text-transform: uppercase; color: var(--muted-foreground); }
 }
+.ai-dup-items li[data-kept] { font-weight: 500; }
+.ai-keep { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; color: var(--muted-foreground); font-size: 11.5px; min-width: 68px; }
+.ai-dup-items li[data-kept] .ai-keep { color: var(--foreground); }
+.ai-dup-items .ai-size { margin-left: auto; }
