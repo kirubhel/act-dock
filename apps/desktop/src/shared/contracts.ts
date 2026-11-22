@@ -194,6 +194,8 @@ export const memberSchema = z.object({
   /** Jira account this person was linked to by name when their email is hidden in Jira. */
   accountId: z.string().optional(),
   jiraName: z.string().optional(),
+  /** GitHub/GitLab username, used to match this person to pull request authors and reviewers. Optional and never required. */
+  login: z.string().optional(),
 });
 export type Member = z.infer<typeof memberSchema>;
 export type MemberList = { members: Member[]; category?: string };
@@ -422,6 +424,8 @@ export const methods = {
   add_member: z.object({
     projectId: z.string().optional(), category: z.string().trim().min(1).optional(),
     name: z.string().trim().min(1).max(120), email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
+    /** Omit to keep the stored login; an empty string clears it. */
+    login: z.string().trim().max(100).optional(),
   }).refine((v) => (v.projectId === undefined) !== (v.category === undefined), "Choose a project or a group."),
   remove_member: z.object({
     projectId: z.string().optional(), category: z.string().trim().min(1).optional(),

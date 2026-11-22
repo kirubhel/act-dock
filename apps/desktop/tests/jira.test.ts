@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/runner/store";
 import {
-  addMember, createJiraIssue, getJiraConfig, linkMemberJira, listMembers, normalizeJiraSite, putJiraConfig, removeMember, searchJiraUsers,
+  addMember, createJiraIssue, getJiraConfig, linkMemberJira, listMembers, normalizeJiraSite, normalizeLogin, putJiraConfig, removeMember, searchJiraUsers,
 } from "../src/runner/jira";
 
 const originalFetch = globalThis.fetch;
@@ -134,4 +134,24 @@ test("a member with a hidden email is linked by name once and then assigned with
     expect(urls.some((u) => u.includes("/user/search"))).toBe(false);
     expect(() => linkMemberJira(store, project, "stranger@example.com", "x")).toThrow("not a member");
   });
+});
+
+test("a member's Git username is optional, normalized, kept on re-add, and clearable", async () => {
+  await withStore(async (store) => {
+    addMember(store, { category: "Group" }, "Ann", "ann@example.com");
+    expect(listMembers(store, { category: "Group" }).members[0]).not.toHaveProperty("login");
+    addMember(store, { category: "Group" }, "Ann", "ann@example.com", " @AnnDev ");
+    expect(listMembers(store, { category: "Group" }).members[0].login).toBe("AnnDev");
+    addMember(store, { category: "Group" }, "Ann B", "ann@example.com"); // renaming keeps the login
+    expect(listMembers(store, { category: "Group" }).members[0]).toMatchObject({ name: "Ann B", login: "AnnDev" });
+    addMember(store, { category: "Group" }, "Ann B", "ann@example.com", ""); // empty clears it
+    expect(listMembers(store, { category: "Group" }).members[0]).not.toHaveProperty("login");
+  });
+});
+
+test("Git usernames reject emails and spaces", () => {
+  expect(normalizeLogin("")).toBeUndefined();
+  expect(normalizeLogin("@ann-dev")).toBe("ann-dev");
+  expect(() => normalizeLogin("ann@example.com")).toThrow("username only");
+  expect(() => normalizeLogin("ann dev")).toThrow("username only");
 });

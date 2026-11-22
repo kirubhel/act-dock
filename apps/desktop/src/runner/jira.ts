@@ -14,7 +14,7 @@ import { Store } from "./store";
 
 // Members are plain name/email pairs kept per project or per folder group (category).
 // The Jira connection is one per installation; its API token is stored encrypted.
-type Person = { name: string; email: string; accountId?: string; jiraName?: string };
+type Person = { name: string; email: string; accountId?: string; jiraName?: string; login?: string };
 type Scope = { projectId?: string; category?: string };
 type JiraStored = { site: string; email: string; updatedAt: string } & Credential;
 
@@ -55,11 +55,23 @@ export function listMembers(store: Store, scope: Scope): MemberList {
   return { members, ...(project.category ? { category: project.category } : {}) };
 }
 
-export function addMember(store: Store, scope: Scope, name: string, email: string): MemberList {
+/** A GitHub/GitLab username: no leading @, no spaces. Returns undefined for empty input. */
+export function normalizeLogin(input: string): string | undefined {
+  const login = input.trim().replace(/^@/, "");
+  if (!login) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(login))
+    throw new AppError("MEMBER_LOGIN_INVALID", "Use the GitHub or GitLab username only, without spaces or an email address.");
+  return login;
+}
+
+/** `login` undefined keeps the stored one; an empty string clears it. */
+export function addMember(store: Store, scope: Scope, name: string, email: string, login?: string): MemberList {
   if (scope.projectId) store.project(scope.projectId);
   const people = readPeople(store, scope);
   const previous = people.find((p) => p.email === email);
-  const next = [...people.filter((p) => p.email !== email), { ...previous, name, email }]
+  const { login: previousLogin, ...rest } = previous ?? {};
+  const nextLogin = login === undefined ? previousLogin : normalizeLogin(login);
+  const next = [...people.filter((p) => p.email !== email), { ...rest, name, email, ...(nextLogin ? { login: nextLogin } : {}) }]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   putKv(store, memberKey(scope), JSON.stringify(next));
   return listMembers(store, scope);

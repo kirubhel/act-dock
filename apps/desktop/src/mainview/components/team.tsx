@@ -82,6 +82,7 @@ export function TeamSettings({ scope }: { scope: Scope }) {
   const [list, setList] = useState<MemberList>({ members: [] });
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [login, setLogin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const target = scope.projectId ? { projectId: scope.projectId } : { category: scope.category! };
@@ -90,18 +91,18 @@ export function TeamSettings({ scope }: { scope: Scope }) {
   }, [scope.projectId, scope.category]);
   async function run(call: () => Promise<MemberList>, reset = false) {
     setBusy(true); setError("");
-    try { setList(await call()); if (reset) { setName(""); setEmail(""); } }
+    try { setList(await call()); if (reset) { setName(""); setEmail(""); setLogin(""); } }
     catch (e) { setError(fail(e)); }
     finally { setBusy(false); }
   }
   const canAdd = name.trim() && email.trim() && !busy;
-  const add = () => void run(() => api("add_member", { ...target, name, email }), true);
+  const add = () => void run(() => api("add_member", { ...target, name, email, ...(login.trim() ? { login } : {}) }), true);
   return <div className="tab-stack">
     <p className="field-help">
       {scope.projectId
         ? `People on this project. ${list.category ? `Members of ${list.category} are included automatically.` : ""}`
         : "People on every project in this group. A project can add its own members on top."}
-      {" "}Their email is used to find their Jira account when you assign a task.
+      {" "}Their email is used to find their Jira account when you assign a task. The Git username is optional and matches them to pull request authors and reviewers; adding the same email again updates a member.
     </p>
     <div className="border border-border rounded-lg p-4 space-y-3">
       <Label htmlFor="member-name">Members</Label>
@@ -109,6 +110,7 @@ export function TeamSettings({ scope }: { scope: Scope }) {
       {list.members.map((member: Member) => <div key={`${member.scope}:${member.email}`} className="flex items-center justify-between gap-2 text-sm">
         <span className="truncate">
           {member.name} <span className="mono text-muted-foreground">{member.email}</span>
+          {member.login && <span className="field-help"> · @{member.login}</span>}
           {scope.projectId && member.scope === "category" && <span className="field-help"> · from {list.category}</span>}
         </span>
         {(!scope.projectId || member.scope === "project") && (
@@ -122,6 +124,9 @@ export function TeamSettings({ scope }: { scope: Scope }) {
         <Input id="member-name" value={name} placeholder="Name" autoComplete="off" onChange={(event) => setName(event.target.value)} />
         <Input aria-label="Member email" type="email" value={email} placeholder="name@company.com" autoComplete="off" spellCheck={false}
           onChange={(event) => setEmail(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter" && canAdd) add(); }} />
+        <Input aria-label="GitHub or GitLab username (optional)" value={login} placeholder="Git username" autoComplete="off" spellCheck={false}
+          onChange={(event) => setLogin(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter" && canAdd) add(); }} />
         <Button size="sm" disabled={!canAdd} onClick={add}><UserPlus className="size-3.5" />Add</Button>
       </div>

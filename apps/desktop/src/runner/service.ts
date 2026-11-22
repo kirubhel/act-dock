@@ -434,7 +434,7 @@ export async function serve() {
       }
       case "add_member": {
         const p = methods.add_member.parse(raw);
-        return addMember(store, p, p.name, p.email);
+        return addMember(store, p, p.name, p.email, p.login);
       }
       case "remove_member": {
         const p = methods.remove_member.parse(raw);
