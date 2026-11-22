@@ -96,6 +96,8 @@ export type WorkflowInput = {
   required: boolean;
   default?: string;
   options: string[];
+  /** When set, the input only applies to these events (GitLab context variables); unset means workflow_dispatch. */
+  events?: string[];
 };
 export type Job = {
   id: string;
@@ -677,6 +679,7 @@ const workflowSchema = z.object({
       required: z.boolean(),
       default: z.string().optional(),
       options: z.array(z.string()),
+      events: z.array(z.string()).optional(),
     }),
   ),
   diagnostic: z.string().optional(),

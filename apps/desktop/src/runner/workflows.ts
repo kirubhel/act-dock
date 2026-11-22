@@ -11,10 +11,15 @@ import {
   type ExecutionSnapshot,
 } from "../shared/contracts";
 import {
+  CI_CONTEXT_INPUTS,
+  DEFAULT_TARGET_BRANCH,
   GITLAB_EVENTS,
   actEventFor,
+  currentBranch,
   materializeGitLabWorkflow,
   parseGitLabPipeline,
+  pipelineContext,
+  selectPipelineJobs,
 } from "./gitlab";
 const strings = (v: unknown): string[] =>
   v == null ? [] : (Array.isArray(v) ? v : [v]).map(String);
@@ -151,6 +156,17 @@ async function discoverGitLab(project: Project): Promise<Workflow[]> {
         }));
         const stages = pipeline.stages.slice(0, 3).join(" → ");
         w.name = `GitLab CI: ${stages}${pipeline.stages.length > 3 ? "…" : ""}`;
+        // Rules are evaluated per run, so the run dialog lets you choose the branches they see.
+        if (pipeline.jobs.some((j) => j.rules)) {
+          const branch = currentBranch(project.path) ?? "";
+          const input = (name: string, description: string, events: string[], value: string) =>
+            ({ name, type: "string", description, required: false, default: value, options: [], events });
+          w.inputs = [
+            input("CI_COMMIT_BRANCH", "Branch the rules see as CI_COMMIT_BRANCH. Defaults to your current branch.", ["push", "manual"], branch),
+            input("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME", "Source branch of the merge request. Defaults to your current branch.", ["merge_request"], branch),
+            input("CI_MERGE_REQUEST_TARGET_BRANCH_NAME", "Branch the merge request targets.", ["merge_request"], DEFAULT_TARGET_BRANCH),
+          ];
+        }
       } catch (e) {
         w.diagnostic = e instanceof Error ? e.message : String(e);
       }
@@ -212,7 +228,20 @@ export async function validateRun(project: Project, request: RunRequest) {
       "INVALID_JOB",
       "Job no longer exists. Refresh workflows.",
     );
-  const jobs = new Map(w.jobs.map((j) => [j.id, j]));
+  let runnable = w.jobs;
+  if (isGitLabWorkflow(request.workflowPath)) {
+    // Only the jobs this event and branch actually run need a supported runner.
+    try {
+      const pipeline = parseGitLabPipeline(await readFile(join(project.path, request.workflowPath), "utf8"));
+      const ids = new Set(
+        selectPipelineJobs(pipeline, pipelineContext(project.path, request.event, request.inputs), request.jobId).jobs.map((j) => j.id),
+      );
+      runnable = w.jobs.filter((j) => ids.has(j.id)).map((j) => ({ ...j, needs: j.needs.filter((n) => ids.has(n)) }));
+    } catch (e) {
+      throw new AppError("INVALID_WORKFLOW", e instanceof Error ? e.message : String(e));
+    }
+  }
+  const jobs = new Map(runnable.map((j) => [j.id, j]));
   const selected = new Map<string, Job>();
   function visit(j: Job) {
     if (selected.has(j.id)) return;
@@ -223,7 +252,7 @@ export async function validateRun(project: Project, request: RunRequest) {
       visit(p);
     }
   }
-  (request.jobId ? [jobs.get(request.jobId)!] : w.jobs).forEach(visit);
+  (request.jobId ? [jobs.get(request.jobId)!] : runnable).forEach(visit);
   for (const j of selected.values()) {
     if (
       (!j.runners.length && !j.uses) ||
@@ -242,7 +271,7 @@ export async function validateRun(project: Project, request: RunRequest) {
       );
   }
   if (request.event === "workflow_dispatch")
-    for (const i of w.inputs) {
+    for (const i of w.inputs.filter((i) => !i.events)) {
       const value = request.inputs[i.name] ?? i.default;
       if (i.required && (value === undefined || value === ""))
         throw new AppError("INPUT_REQUIRED", `${i.name} is required.`);
@@ -292,7 +321,7 @@ export function commandArgs(
   let event = r.event;
   // GitLab pipelines run from their normalized GitHub-style form (see gitlab.ts).
   if (isGitLabWorkflow(r.workflowPath)) {
-    targetWorkflow = materializeGitLabWorkflow(project.path, r.workflowPath);
+    targetWorkflow = materializeGitLabWorkflow(project.path, r.workflowPath, { event: r.event, inputs: r.inputs, jobId: r.jobId });
     event = actEventFor(r.event);
   }
   const targetJobId = r.jobId;
@@ -321,8 +350,11 @@ export function commandArgs(
       args.push("--concurrent-jobs", String(snapshot.options.concurrentJobs));
     if (snapshot.options.workspaceMode === "bind") args.push("--bind");
   }
-  for (const [key, value] of Object.entries(r.inputs))
+  for (const [key, value] of Object.entries(r.inputs)) {
+    // GitLab rule context is consumed when the pipeline is converted; Act has no such inputs.
+    if (isGitLabWorkflow(r.workflowPath) && (CI_CONTEXT_INPUTS as readonly string[]).includes(key)) continue;
     args.push("--input", `${key}=${value}`);
+  }
   for (const [key, flag] of [
     ["eventFile", "--eventpath"],
     ["envFile", "--env-file"],

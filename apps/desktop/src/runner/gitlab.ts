@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseDocument, stringify } from "yaml";
 import { AppError } from "../shared/contracts";
+import { conditionVariables, evaluateCondition, parseCondition, type Expr, type Variables } from "./gitlab-rules";
 
 /**
  * GitLab CI support. A GitLab pipeline is normalized once into a small model
@@ -49,6 +50,14 @@ export const DEFAULT_RUNNER = "ubuntu-latest";
 
 type Obj = Record<string, unknown>;
 
+/** One entry of a job's `rules`. `when` unset means "inherit the job's when". */
+export type GitLabRule = {
+  condition?: Expr;
+  text?: string;
+  when?: "on_success" | "manual" | "never";
+  variables: Record<string, string>;
+};
+
 export type GitLabJob = {
   /** Stable id: the job name with characters Act does not accept replaced. */
   id: string;
@@ -62,11 +71,19 @@ export type GitLabJob = {
   allowFailure: boolean;
   container: boolean;
   image?: string;
+  /** Conditions evaluated per run by selectPipelineJobs; discovery lists every job. */
+  rules?: GitLabRule[];
+  when: "on_success" | "manual";
+  stageIndex: number;
+  /** Declared `needs`, kept apart from stage ordering because an excluded job is an error only for the former. */
+  explicitNeeds?: { id: string; optional: boolean }[];
 };
 
 export type GitLabPipeline = {
   stages: string[];
   jobs: GitLabJob[];
+  /** Pipeline-level `variables`, which rules may read. */
+  variables: Record<string, string>;
 };
 
 const isObj = (v: unknown): v is Obj =>
@@ -93,6 +110,35 @@ function imageName(value: unknown, jobName: string): string | undefined {
   if (typeof name !== "string" || !name.trim() || /\$/.test(name))
     throw new Error(`${jobName}.image must be a non-empty literal image name; variable expansion is not supported yet.`);
   return name;
+}
+
+const RULE_KEYS = new Set(["if", "when", "variables"]);
+function parseRules(name: string, value: unknown): GitLabRule[] {
+  if (!Array.isArray(value)) throw new Error(`${name}.rules must be a list.`);
+  return value.map((entry, index) => {
+    const where = `${name}.rules[${index}]`;
+    if (!isObj(entry)) throw new Error(`${where} must be a mapping.`);
+    for (const key of Object.keys(entry))
+      if (!RULE_KEYS.has(key))
+        throw new Error(`${where}.${key} is not supported yet. Rule conditions cannot be ignored; Act Dock supports if, when and variables.`);
+    let condition: Expr | undefined;
+    if (entry.if !== undefined) {
+      if (typeof entry.if !== "string") throw new Error(`${where}.if must be a string.`);
+      try { condition = parseCondition(entry.if); }
+      catch (e) { throw new Error(`${where}.if is not supported yet: ${e instanceof Error ? e.message : e} (in "${entry.if}").`); }
+    }
+    if (entry.when !== undefined && !["on_success", "manual", "never"].includes(String(entry.when)))
+      throw new Error(`${where}.when=${String(entry.when)} is not supported yet. Job conditions cannot be ignored.`);
+    const variables: Record<string, string> = {};
+    if (entry.variables !== undefined) {
+      if (!isObj(entry.variables)) throw new Error(`${where}.variables must be a mapping.`);
+      for (const [k, v] of Object.entries(entry.variables)) {
+        if (!SCALARS.includes(typeof v)) throw new Error(`${where}.variables.${k} must be a string, number or boolean.`);
+        variables[k] = String(v);
+      }
+    }
+    return { condition, text: typeof entry.if === "string" ? entry.if : undefined, when: entry.when as GitLabRule["when"], variables };
+  });
 }
 
 /** Child values replace parent values; plain mappings (such as variables) merge. */
@@ -182,10 +228,10 @@ export function parseGitLabPipeline(raw: string): GitLabPipeline {
     const job = resolveJob(name, raw, templates, defaults);
     if (job.trigger !== undefined)
       throw new Error(`${name} is a trigger job, which is not supported yet.`);
-    for (const key of ["rules", "only", "except"])
+    for (const key of ["only", "except"])
       if (job[key] !== undefined)
-        throw new Error(`${name}.${key} is not supported yet. Job conditions cannot be ignored.`);
-    if (job.when !== undefined && job.when !== "on_success")
+        throw new Error(`${name}.${key} is not supported yet. Job conditions cannot be ignored. Use rules instead.`);
+    if (job.when !== undefined && job.when !== "on_success" && job.when !== "manual")
       throw new Error(`${name}.when=${String(job.when)} is not supported yet. Job conditions cannot be ignored.`);
     const id = name.replace(/[^a-zA-Z0-9_-]/g, "_");
     if (ids.has(id))
@@ -212,7 +258,9 @@ export function parseGitLabPipeline(raw: string): GitLabPipeline {
     if (script.length === 0)
       throw new Error(`${name} has no script. Add script to the job or its parent.`);
     const needs: string[] = [];
+    let explicitNeeds: GitLabJob["explicitNeeds"];
     if (job.needs !== undefined) {
+      explicitNeeds = [];
       // An explicit `needs` replaces stage ordering for this job, as in GitLab.
       const list = Array.isArray(job.needs) ? job.needs : [job.needs];
       for (const item of list) {
@@ -221,11 +269,13 @@ export function parseGitLabPipeline(raw: string): GitLabPipeline {
           throw new Error(`${name} has an invalid needs entry.`);
         if (isObj(item) && (item.project || item.pipeline))
           throw new Error(`${name} needs a job from another pipeline, which is not supported yet.`);
+        const optional = isObj(item) && item.optional === true;
         if (!resolved.has(dep)) {
-          if (isObj(item) && item.optional === true) continue;
+          if (optional) continue;
           throw new Error(`${name} needs ${dep}, which is not a job in this pipeline.`);
         }
         needs.push(dep.replace(/[^a-zA-Z0-9_-]/g, "_"));
+        explicitNeeds.push({ id: dep.replace(/[^a-zA-Z0-9_-]/g, "_"), optional });
       }
     } else {
       const mine = stageIndex(name, job);
@@ -251,6 +301,10 @@ export function parseGitLabPipeline(raw: string): GitLabPipeline {
       allowFailure: job.allow_failure === true,
       container: job.image !== undefined,
       image: imageName(job.image, name),
+      ...(job.rules !== undefined ? { rules: parseRules(name, job.rules) } : {}),
+      when: job.when === "manual" ? "manual" : "on_success",
+      stageIndex: stageIndex(name, job),
+      ...(explicitNeeds ? { explicitNeeds } : {}),
     });
   }
 
@@ -266,7 +320,156 @@ export function parseGitLabPipeline(raw: string): GitLabPipeline {
   };
   jobs.forEach((j) => visit(j.id));
 
-  return { stages, jobs };
+  const variables: Record<string, string> = {};
+  for (const [k, v] of Object.entries(globalVariables)) if (SCALARS.includes(typeof v)) variables[k] = String(v);
+  return { stages, jobs, variables };
+}
+
+/** What GitLab would know when it creates the pipeline: the event, branches and the variables derived from them. */
+export type PipelineContext = {
+  event: string;
+  branch?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
+};
+
+/** Inputs a run can set to choose which rules match. They are never passed to Act as workflow inputs. */
+export const CI_CONTEXT_INPUTS = [
+  "CI_COMMIT_BRANCH",
+  "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME",
+  "CI_MERGE_REQUEST_TARGET_BRANCH_NAME",
+] as const;
+export const DEFAULT_TARGET_BRANCH = "main";
+
+/** The checked-out branch, or undefined on a detached HEAD or outside a repository. */
+export function currentBranch(projectPath: string): string | undefined {
+  try {
+    // symbolic-ref also works before the first commit, and fails (empty) on a detached HEAD.
+    const r = Bun.spawnSync(["git", "symbolic-ref", "--short", "-q", "HEAD"], { cwd: projectPath, stdout: "pipe", stderr: "ignore" });
+    return (r.exitCode === 0 ? r.stdout.toString().trim() : "") || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function pipelineContext(projectPath: string, event: string, inputs: Record<string, string> = {}): PipelineContext {
+  const branch = currentBranch(projectPath);
+  const pick = (key: string, fallback?: string) => inputs[key]?.trim() || fallback;
+  return {
+    event,
+    branch: pick("CI_COMMIT_BRANCH", branch),
+    sourceBranch: pick("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME", branch),
+    targetBranch: pick("CI_MERGE_REQUEST_TARGET_BRANCH_NAME", DEFAULT_TARGET_BRANCH),
+  };
+}
+
+/** Predefined variables for the context. Merge request pipelines have no CI_COMMIT_BRANCH, as in GitLab. */
+export function contextVariables(ctx: PipelineContext): Variables {
+  const v = (value: string | undefined) => value ?? null;
+  if (ctx.event === "merge_request")
+    return {
+      CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_BRANCH: null, CI_COMMIT_TAG: null,
+      CI_COMMIT_REF_NAME: v(ctx.sourceBranch),
+      CI_MERGE_REQUEST_SOURCE_BRANCH_NAME: v(ctx.sourceBranch),
+      CI_MERGE_REQUEST_TARGET_BRANCH_NAME: v(ctx.targetBranch),
+    };
+  return {
+    CI_PIPELINE_SOURCE: ctx.event === "manual" ? "web" : "push",
+    CI_COMMIT_BRANCH: v(ctx.branch), CI_COMMIT_REF_NAME: v(ctx.branch), CI_COMMIT_TAG: null,
+    CI_MERGE_REQUEST_SOURCE_BRANCH_NAME: null, CI_MERGE_REQUEST_TARGET_BRANCH_NAME: null,
+  };
+}
+
+const describeContext = (ctx: PipelineContext) =>
+  ctx.event === "merge_request"
+    ? `a merge request from ${ctx.sourceBranch || "?"} into ${ctx.targetBranch || "?"}`
+    : `${ctx.event === "manual" ? "a manual run" : "a push"} on ${ctx.branch || "no branch"}`;
+
+export type SelectedPipeline = {
+  jobs: GitLabJob[];
+  skipped: { name: string; reason: string }[];
+};
+
+/**
+ * Applies `rules` and `when: manual` for one run, as GitLab does when it creates a pipeline:
+ * the first matching rule decides, a job with rules that none match is not added, and rule variables
+ * override job variables. A whole-pipeline run leaves out manual jobs, and jobs that explicitly need one,
+ * because nobody has played them. Running one job by id runs it with everything it needs, manual or not.
+ * Throws a readable reason when the answer cannot be trusted (an unknown variable, a needed job that is excluded).
+ */
+export function selectPipelineJobs(pipeline: GitLabPipeline, ctx: PipelineContext, jobId?: string): SelectedPipeline {
+  const predefined = contextVariables(ctx);
+  const vars: Variables = { ...pipeline.variables, ...predefined };
+  const known = new Set([...Object.keys(pipeline.variables), ...Object.keys(predefined)]);
+  const where = describeContext(ctx);
+  type Decision = { job: GitLabJob; included: boolean; manual: boolean; env: Record<string, string>; reason?: string };
+  const injected = Object.fromEntries(Object.entries(predefined).filter((e): e is [string, string] => e[1] !== null && e[1] !== ""));
+  const decide = (job: GitLabJob): Decision => {
+    const base = { job, env: { ...injected, ...job.env } };
+    if (!job.rules) return { ...base, included: true, manual: job.when === "manual" };
+    for (const rule of job.rules) {
+      if (rule.condition) {
+        for (const name of conditionVariables(rule.condition))
+          if (!known.has(name))
+            throw new Error(`${job.name}: the rule "${rule.text}" uses $${name}, which Act Dock cannot know when running locally. Define it under variables: in the file.`);
+        if (!evaluateCondition(rule.condition, vars)) continue;
+      }
+      const when = rule.when ?? job.when;
+      if (when === "never") return { ...base, included: false, manual: false, reason: `a rule says never for ${where}` };
+      return { ...base, env: { ...base.env, ...rule.variables }, included: true, manual: when === "manual" };
+    }
+    return { ...base, included: false, manual: false, reason: `no rule matches ${where}` };
+  };
+  const decisions = pipeline.jobs.map(decide);
+  const byId = new Map(decisions.map((d) => [d.job.id, d]));
+  const active = decisions.filter((d) => d.included);
+
+  /** Dependencies of an included job among the included ones. Stage ordering ignores manual jobs, which do not hold up later stages. */
+  const needsOf = (d: Decision): string[] => {
+    if (d.job.explicitNeeds) {
+      const ids: string[] = [];
+      for (const need of d.job.explicitNeeds) {
+        const dep = byId.get(need.id);
+        if (dep?.included) ids.push(need.id);
+        else if (!need.optional)
+          throw new Error(`${d.job.name} needs ${dep?.job.name ?? need.id}, but its rules exclude it for ${where}. Choose an event or branch where both run.`);
+      }
+      return ids;
+    }
+    return active.filter((o) => o.job.id !== d.job.id && !o.manual && o.job.stageIndex < d.job.stageIndex).map((o) => o.job.id);
+  };
+
+  const skipped: SelectedPipeline["skipped"] = decisions.filter((d) => !d.included).map((d) => ({ name: d.job.name, reason: d.reason! }));
+  let run: Set<string>;
+  if (jobId) {
+    const target = byId.get(jobId);
+    if (!target) throw new Error(`Job ${jobId} is not in this pipeline.`);
+    if (!target.included) throw new Error(`${target.job.name} is excluded by its rules for ${where}. Choose an event or branch where it runs.`);
+    run = new Set();
+    const visit = (d: Decision) => {
+      if (run.has(d.job.id)) return;
+      run.add(d.job.id);
+      for (const id of needsOf(d)) visit(byId.get(id)!);
+    };
+    visit(target);
+  } else {
+    run = new Set(active.filter((d) => !d.manual).map((d) => d.job.id));
+    // A job that explicitly needs a manual job waits for it, and so does everything that needs that job.
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const d of active) {
+        if (!run.has(d.job.id)) continue;
+        if (needsOf(d).some((id) => !run.has(id))) { run.delete(d.job.id); changed = true; }
+      }
+    }
+    for (const d of active) if (!run.has(d.job.id))
+      skipped.push({ name: d.job.name, reason: d.manual ? "manual job; run it by itself to play it" : "waits for a manual job" });
+  }
+  const jobs = decisions.filter((d) => run.has(d.job.id)).map((d) => ({
+    ...d.job, env: d.env, needs: needsOf(d).filter((id) => run.has(id)),
+  }));
+  if (jobs.length === 0) throw new Error(`No job runs for ${where}: every job is excluded by its rules or waits for a manual run.`);
+  return { jobs, skipped };
 }
 
 /** The GitHub-style workflow Act runs for a normalized GitLab pipeline. */
@@ -315,10 +518,12 @@ export function readGitLabPipeline(fullPath: string): GitLabPipeline {
 export function materializeGitLabWorkflow(
   projectPath: string,
   relPath: string,
+  run: { event: string; inputs?: Record<string, string>; jobId?: string } = { event: "push" },
 ): string {
   let pipeline: GitLabPipeline;
   try {
-    pipeline = readGitLabPipeline(join(projectPath, relPath));
+    const parsed = readGitLabPipeline(join(projectPath, relPath));
+    pipeline = { ...parsed, jobs: selectPipelineJobs(parsed, pipelineContext(projectPath, run.event, run.inputs), run.jobId).jobs };
   } catch (e) {
     throw new AppError(
       "INVALID_WORKFLOW",
@@ -329,7 +534,9 @@ export function materializeGitLabWorkflow(
   const digest = createHash("sha256").update(relPath).digest("hex").slice(0, 12);
   const outDir = join(projectPath, ".act-dock/workflows");
   mkdirSync(outDir, { recursive: true });
-  const out = join(outDir, `gitlab-${digest}.yml`);
+  // Different events and branches select different jobs, so each selection gets its own file.
+  const selection = createHash("sha256").update(JSON.stringify(pipeline.jobs)).digest("hex").slice(0, 8);
+  const out = join(outDir, `gitlab-${digest}-${selection}.yml`);
   writeFileSync(
     out,
     stringify(buildGitLabWorkflow(pipeline, name), { lineWidth: 0 }),

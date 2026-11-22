@@ -166,15 +166,14 @@ deploy:
 
 describe("GitLab execution settings", () => {
   test.each([
-    "when: manual", "when: never", "when: on_failure",
-    "rules: [{when: never}]", "only: [main]", "except: [branches]",
+    "when: never", "when: on_failure", "only: [main]", "except: [branches]",
   ])("rejects unsupported job conditions: %s", (condition) => {
     expect(() => parseGitLabPipeline(`job:\n  script: echo deploy\n  ${condition}\n`)).toThrow("not supported");
   });
 
   test("inherited and pipeline conditions are rejected during discovery", async () => {
-    await pipeline(".base:\n  when: manual\njob:\n  extends: .base\n  script: echo deploy\n");
-    expect((await discover(project))[0].diagnostic).toContain("when=manual");
+    await pipeline(".base:\n  when: on_failure\njob:\n  extends: .base\n  script: echo deploy\n");
+    expect((await discover(project))[0].diagnostic).toContain("when=on_failure");
     expect(() => parseGitLabPipeline("workflow:\n  rules: [{when: never}]\njob:\n  script: echo deploy\n")).toThrow("workflow.rules");
   });
 

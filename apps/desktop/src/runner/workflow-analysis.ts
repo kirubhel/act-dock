@@ -62,7 +62,7 @@ export function actContainerName(...parts: string[]) {
 export async function analyzeWorkflow(project: Project, request: RunRequest) {
   // Analyze the file Act will actually run: GitLab pipelines are normalized first.
   const path = isGitLabWorkflow(request.workflowPath)
-      ? materializeGitLabWorkflow(project.path, request.workflowPath)
+      ? materializeGitLabWorkflow(project.path, request.workflowPath, { event: request.event, inputs: request.inputs, jobId: request.jobId })
       : resolve(project.path, request.workflowPath),
     data = await yamlData(path);
   const jobs = data.jobs || {},

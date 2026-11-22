@@ -105,6 +105,8 @@ export function RunDialog({
         .map((k) => [k, p.defaults[k as keyof RunRequest]]),
     ),
   });
+  // GitLab rule context applies to the events it names; ordinary inputs belong to workflow_dispatch.
+  const shownInputs = w.inputs.filter((i) => (i.events ? i.events.includes(request.event) : request.event === "workflow_dispatch"));
   const [save, setSave] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -214,12 +216,12 @@ export function RunDialog({
               ]}
             />
           </div>
-          {request.event === "workflow_dispatch" && w.inputs.length > 0 && (
+          {shownInputs.length > 0 && (
             <>
               <Separator />
               <div className="field-stack">
                 <h3>Workflow inputs</h3>
-                {w.inputs.map((i) => (
+                {shownInputs.map((i) => (
                   <div className="field" key={i.name}>
                     {i.type === "boolean" ? (
                       <div className="check-row">
