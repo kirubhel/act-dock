@@ -257,6 +257,69 @@ export type BranchPipelines = {
   host?: string;
   branches: BranchPipeline[];
 };
+export const AI_SKILL_CATEGORIES = [
+  "Frontend & Design", "Backend & API", "Mobile", "CI/CD & DevOps", "Testing & Quality", "Security",
+  "Git & Code Review", "Data & AI", "Docs & Writing", "Other",
+] as const;
+export type AiSkillCategory = (typeof AI_SKILL_CATEGORIES)[number];
+/** Tools a skill can be installed into from the AI toolkit. */
+export const AI_INSTALL_TARGETS = ["claude", "codex", "antigravity"] as const;
+export type AiInstallTarget = (typeof AI_INSTALL_TARGETS)[number];
+/** One thing the AI toolkit can show and, from the latest scan only, move to the Trash. */
+export type AiItemBase = {
+  id: string; name: string; path: string;
+  /** Disk space the item occupies. */
+  bytes: number;
+  /** Space actually freed by removing it (less than bytes when files are shared or it is only a link). */
+  reclaimBytes: number;
+  howToUse: string;
+  modified?: string;
+};
+export type AiModelSource = "ollama" | "huggingface" | "lmstudio" | "file";
+/** Evidence that an app uses a model: the app, project or process, and what was found. */
+export type AiUsage = {
+  app: string;
+  kind: "running" | "app" | "app-data" | "config" | "project";
+  evidence: string;
+  path: string;
+  /** The line that names the model, when the evidence is a file. */
+  snippet?: string;
+  matches: number;
+};
+export type AiModel = AiItemBase & { source: AiModelSource; detail?: string };
+/** Which apps use which models, by model id. Found in a second, slower pass after the scan. */
+export type AiUsageReport = { usage: Record<string, AiUsage[]>; notes: string[] };
+export type AiSkillEntry = AiItemBase & {
+  kind: "skill" | "agent" | "command";
+  category: AiSkillCategory;
+  /** The tool whose folder holds this entry (claude, agents, codex, gemini, cursor, opencode). */
+  tool: string;
+  description: string;
+  isLink: boolean;
+  broken: boolean;
+  realPath?: string;
+  hash?: string;
+  removable: boolean;
+  managed?: "system";
+  /** For a broken link: where the skill most likely moved to. */
+  repairTo?: string;
+};
+export type AiDuplicateGroup = {
+  id: string; subject: "skill" | "model"; name: string;
+  verdict: "identical" | "different" | "possible";
+  itemIds: string[]; keepId?: string; reclaimBytes: number; note: string;
+};
+export type AiToolData = { tool: string; path: string; bytes: number; parts: { name: string; bytes: number }[] };
+export type AiInventory = {
+  scannedAt: string; home: string;
+  models: AiModel[]; skills: AiSkillEntry[]; duplicates: AiDuplicateGroup[]; toolData: AiToolData[];
+  notes: string[];
+};
+export type AiRemovalItem = { id: string; name: string; path: string; action: "trash" | "ollama-model" | "relink" | "install"; bytes: number; warnings: string[] };
+export type AiRemovalResult = {
+  dryRun: boolean; items: AiRemovalItem[]; freedBytes: number;
+  removed: string[]; failed: { id: string; message: string }[];
+};
 /** What the runner last learned about one project's remote. A failed refresh keeps the previous data and sets `error`. */
 export type RemoteProjectState = {
   pullRequests?: PullRequestList; pipelines?: LatestPipelines;
@@ -464,6 +527,25 @@ export const methods = {
   get_branch_pipeline_detail: z.object({ projectId: z.string(), pipelineId: z.number().int().positive() }),
   get_branch_job_errors: z.object({ projectId: z.string(), jobId: z.number().int().positive() }),
   list_pull_requests: z.object({ projectId: z.string() }),
+  scan_ai_inventory: z.object({}).default({}),
+  scan_ai_usage: z.object({}).default({}),
+  install_ai_skills: z.object({
+    /** Skills from the latest scan to install. Never paths. */
+    ids: z.array(z.string().min(1).max(2048)).min(1).max(300),
+    targets: z.array(z.enum(AI_INSTALL_TARGETS)).min(1),
+    /** link keeps one copy and points the tool at it; copy makes an independent folder. */
+    mode: z.enum(["link", "copy"]).default("link"),
+    dryRun: z.boolean().default(true),
+  }),
+  repair_ai_links: z.object({
+    ids: z.array(z.string().min(1).max(2048)).min(1).max(500),
+    dryRun: z.boolean().default(true),
+  }),
+  remove_ai_items: z.object({
+    ids: z.array(z.string().min(1).max(2048)).min(1).max(500),
+    /** Defaults to a preview: nothing is moved unless this is explicitly false. */
+    dryRun: z.boolean().default(true),
+  }),
   get_remote_snapshot: z.object({ since: z.number().int().min(0).default(0), waitMs: z.number().int().min(0).max(10000).default(0) }).default({ since: 0, waitMs: 0 }),
   get_pull_request: z.object({ projectId: z.string(), number: z.number().int().positive() }),
   submit_pull_request_review: z.object({
@@ -573,7 +655,7 @@ export const methods = {
 } as const;
 export type Method = keyof typeof methods;
 /** Methods that wait on the local Claude CLI and may legitimately take minutes. */
-const slowMethods: readonly Method[] = ["review_pull_request_with_claude", "ask_claude_about_pull_request"];
+const slowMethods: readonly Method[] = ["review_pull_request_with_claude", "ask_claude_about_pull_request", "scan_ai_inventory", "scan_ai_usage", "remove_ai_items", "repair_ai_links"];
 export const requestTimeoutMs = (method: Method) => (slowMethods.includes(method) ? 300_000 : undefined);
 export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_execution_config: {
@@ -618,6 +700,11 @@ export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_branch_job_errors: RemoteJobErrors;
   list_pull_requests: PullRequestList;
   get_remote_snapshot: RemoteSnapshot;
+  scan_ai_inventory: AiInventory;
+  scan_ai_usage: AiUsageReport;
+  remove_ai_items: AiRemovalResult;
+  repair_ai_links: AiRemovalResult;
+  install_ai_skills: AiRemovalResult;
   get_pull_request: PullRequestDetail;
   submit_pull_request_review: PullRequestReviewResult;
   review_pull_request_with_claude: ClaudeReview;
@@ -747,6 +834,32 @@ const remoteProjectStateSchema = z.object({
   pullRequests: pullRequestListSchema.optional(), pipelines: latestPipelinesSchema.optional(),
   error: z.object({ code: z.string(), message: z.string() }).optional(), updatedAt: z.string().optional(),
 });
+const aiItemShape = {
+  id: z.string(), name: z.string(), path: z.string(), bytes: z.number(), reclaimBytes: z.number(),
+  howToUse: z.string(), modified: z.string().optional(),
+};
+const aiInventorySchema = z.object({
+  scannedAt: z.string(), home: z.string(),
+  models: z.array(z.object({ ...aiItemShape, source: z.enum(["ollama", "huggingface", "lmstudio", "file"]), detail: z.string().optional() })),
+  skills: z.array(z.object({
+    ...aiItemShape, kind: z.enum(["skill", "agent", "command"]), category: z.enum(AI_SKILL_CATEGORIES), tool: z.string(), description: z.string(),
+    isLink: z.boolean(), broken: z.boolean(), realPath: z.string().optional(), hash: z.string().optional(),
+    removable: z.boolean(), managed: z.literal("system").optional(), repairTo: z.string().optional(),
+  })),
+  duplicates: z.array(z.object({
+    id: z.string(), subject: z.enum(["skill", "model"]), name: z.string(), verdict: z.enum(["identical", "different", "possible"]),
+    itemIds: z.array(z.string()), keepId: z.string().optional(), reclaimBytes: z.number(), note: z.string(),
+  })),
+  toolData: z.array(z.object({ tool: z.string(), path: z.string(), bytes: z.number(), parts: z.array(z.object({ name: z.string(), bytes: z.number() })) })),
+  notes: z.array(z.string()),
+});
+const aiRemovalSchema = z.object({
+  dryRun: z.boolean(),
+  items: z.array(z.object({ id: z.string(), name: z.string(), path: z.string(), action: z.enum(["trash", "ollama-model", "relink", "install"]), bytes: z.number(), warnings: z.array(z.string()) })),
+  freedBytes: z.number(),
+  removed: z.array(z.string()),
+  failed: z.array(z.object({ id: z.string(), message: z.string() })),
+});
 export const responses = {
   ...executionResponses,
   get_execution_config: z.object({
@@ -817,6 +930,17 @@ export const responses = {
   }),
   get_branch_job_errors: z.object({ lines: z.array(z.string()), truncated: z.boolean() }),
   list_pull_requests: pullRequestListSchema,
+  scan_ai_inventory: aiInventorySchema,
+  scan_ai_usage: z.object({
+    usage: z.record(z.string(), z.array(z.object({
+      app: z.string(), kind: z.enum(["running", "app", "app-data", "config", "project"]), evidence: z.string(),
+      path: z.string(), snippet: z.string().optional(), matches: z.number(),
+    }))),
+    notes: z.array(z.string()),
+  }),
+  remove_ai_items: aiRemovalSchema,
+  repair_ai_links: aiRemovalSchema,
+  install_ai_skills: aiRemovalSchema,
   get_remote_snapshot: z.object({
     version: z.number().int().min(0),
     projects: z.record(z.string(), remoteProjectStateSchema),

@@ -34,6 +34,7 @@ import {
   Trash2,
   Terminal,
   Activity,
+  Boxes,
   ListTodo,
   Users,
 } from "lucide-react";
@@ -80,6 +81,7 @@ import { api, openExternal } from "@/lib/api";
 import { AddProjectDialog } from "@/components/add-project-dialog";
 import { BranchPipelinePanel, GitAccessSettings, RemotePipelineView, type RemoteSelection } from "@/components/git-access";
 import { CreateJiraTaskDialog, TeamSettings } from "@/components/team";
+import { AiToolkitView } from "@/components/ai-toolkit";
 import { PullRequestPanel, PullRequestReview, type PullRequestSelection } from "@/components/pull-requests";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
@@ -114,7 +116,8 @@ type View =
   | "history"
   | "agents"
   | "settings"
-  | "health";
+  | "health"
+  | "ai";
 function Workspace() {
   const [projects, setProjects] = useState<Project[]>([]),
     [runs, setRuns] = useState<Run[]>([]),
@@ -706,6 +709,7 @@ function Workspace() {
                   { id: "history", label: "Run history", icon: History },
                   { id: "agents", label: "Agent connections", icon: Cable },
                   { id: "health", label: "System health", icon: Activity },
+                  { id: "ai", label: "AI toolkit", icon: Boxes },
                 ] as const
               ).map((item) => (
                 <SidebarMenuItem key={item.id}>
@@ -853,7 +857,9 @@ function Workspace() {
                     ? "Agent connections"
                     : view === "health"
                       ? "System health"
-                      : "Settings"}
+                      : view === "ai"
+                        ? "AI toolkit"
+                        : "Settings"}
             </strong>
           </div>
           <div className="topbar-meta">
@@ -1259,6 +1265,11 @@ function Workspace() {
         {view === "agents" && (
           <ScrollArea className="page-scroll">
             <AgentsView health={health} />
+          </ScrollArea>
+        )}
+        {view === "ai" && (
+          <ScrollArea className="page-scroll">
+            <AiToolkitView />
           </ScrollArea>
         )}
         {view === "health" && (

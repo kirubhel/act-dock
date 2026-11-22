@@ -43,6 +43,7 @@ import {
 import { setLogin } from "./login";
 import { listenLocal } from "./transport";
 import { RemoteWatcher, remoteFetcher } from "./remote-watch";
+import { AiToolkit } from "./ai-inventory";
 export async function serve() {
   preparePaths();
   const lock = dataDir + "/runner.lock";
@@ -86,6 +87,7 @@ export async function serve() {
   const store = new Store(dataDir);
   const scheduler = new Scheduler(store);
   const remoteWatcher = new RemoteWatcher(() => store.projects(), remoteFetcher(store));
+  const aiToolkit = new AiToolkit();
   let server: Awaited<ReturnType<typeof listenLocal>>;
   let closing = false;
   async function shutdown() {
@@ -485,6 +487,31 @@ export async function serve() {
       case "list_pull_requests": {
         const p = methods.list_pull_requests.parse(raw);
         return listPullRequests(store, store.project(p.projectId));
+      }
+      case "scan_ai_inventory":
+        methods.scan_ai_inventory.parse(raw);
+        return aiToolkit.scan();
+      case "scan_ai_usage":
+        methods.scan_ai_usage.parse(raw);
+        return aiToolkit.scanUsage();
+      case "install_ai_skills": {
+        const p = methods.install_ai_skills.parse(raw);
+        if (!p.dryRun && source === "mcp")
+          throw new AppError("AI_REMOVAL_NEEDS_PERSON", "Agents cannot install skills. Preview the install and ask the user to confirm it in Act Dock.");
+        return aiToolkit.install(p.ids, p.targets, p.mode, p.dryRun);
+      }
+      case "repair_ai_links": {
+        const p = methods.repair_ai_links.parse(raw);
+        if (!p.dryRun && source === "mcp")
+          throw new AppError("AI_REMOVAL_NEEDS_PERSON", "Agents cannot change links. Preview the repair and ask the user to confirm it in Act Dock.");
+        return aiToolkit.repair(p.ids, p.dryRun);
+      }
+      case "remove_ai_items": {
+        const p = methods.remove_ai_items.parse(raw);
+        // Like approving a pull request, deleting files is a person's call: agents may only preview.
+        if (!p.dryRun && source === "mcp")
+          throw new AppError("AI_REMOVAL_NEEDS_PERSON", "Agents cannot remove files. Preview the removal and ask the user to confirm it in Act Dock.");
+        return aiToolkit.remove(p.ids, p.dryRun);
       }
       case "get_remote_snapshot": {
         const p = methods.get_remote_snapshot.parse(raw);
