@@ -258,10 +258,12 @@ export type BranchPipelines = {
   branches: BranchPipeline[];
 };
 export const AI_SKILL_CATEGORIES = [
-  "Frontend & Design", "Backend & API", "Mobile", "CI/CD & DevOps", "Testing & Quality", "Security",
+  "Matrix Standards", "Frontend & Design", "Backend & API", "Mobile", "CI/CD & DevOps", "Testing & Quality", "Security",
   "Git & Code Review", "Data & AI", "Docs & Writing", "Other",
 ] as const;
 export type AiSkillCategory = (typeof AI_SKILL_CATEGORIES)[number];
+export const AI_SKILL_ORIGINS = ["matrix", "installed", "built-in", "other"] as const;
+export type AiSkillOrigin = (typeof AI_SKILL_ORIGINS)[number];
 /** Tools a skill can be installed into from the AI toolkit. */
 export const AI_INSTALL_TARGETS = ["claude", "codex", "antigravity"] as const;
 export type AiInstallTarget = (typeof AI_INSTALL_TARGETS)[number];
@@ -292,6 +294,10 @@ export type AiUsageReport = { usage: Record<string, AiUsage[]>; notes: string[] 
 export type AiSkillEntry = AiItemBase & {
   kind: "skill" | "agent" | "command";
   category: AiSkillCategory;
+  /** Where it came from: your Matrix standards, a pack installed from a repo, built into a tool, or anything else. */
+  origin: AiSkillOrigin;
+  /** For an installed pack, the repo or license it names. */
+  originDetail?: string;
   /** The tool whose folder holds this entry (claude, agents, codex, gemini, cursor, opencode). */
   tool: string;
   description: string;
@@ -842,7 +848,7 @@ const aiInventorySchema = z.object({
   scannedAt: z.string(), home: z.string(),
   models: z.array(z.object({ ...aiItemShape, source: z.enum(["ollama", "huggingface", "lmstudio", "file"]), detail: z.string().optional() })),
   skills: z.array(z.object({
-    ...aiItemShape, kind: z.enum(["skill", "agent", "command"]), category: z.enum(AI_SKILL_CATEGORIES), tool: z.string(), description: z.string(),
+    ...aiItemShape, kind: z.enum(["skill", "agent", "command"]), category: z.enum(AI_SKILL_CATEGORIES), origin: z.enum(AI_SKILL_ORIGINS), originDetail: z.string().optional(), tool: z.string(), description: z.string(),
     isLink: z.boolean(), broken: z.boolean(), realPath: z.string().optional(), hash: z.string().optional(),
     removable: z.boolean(), managed: z.literal("system").optional(), repairTo: z.string().optional(),
   })),

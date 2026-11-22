@@ -4,7 +4,7 @@ import { cp, lstat, mkdir, readdir, readFile, readlink, realpath, rename, stat, 
 import { homedir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { parseDocument } from "yaml";
-import { categorizeSkill } from "./ai-categories";
+import { categorizeSkill, isMatrixSkill } from "./ai-categories";
 import { findModelUsage, type UsageJob } from "./ai-usage";
 import {
   AppError,
@@ -292,12 +292,14 @@ function skillHint(entry: { kind: AiSkillEntry["kind"]; tool: string; name: stri
   return "The tool loads it when your request matches the description.";
 }
 
-function frontmatter(text: string): { name?: string; description?: string } {
+function frontmatter(text: string): { name?: string; description?: string; packaged?: boolean } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (!match) return {};
   try {
     const data = parseDocument(match[1]).toJS() as Record<string, unknown> | null;
-    return { name: typeof data?.name === "string" ? data.name : undefined, description: typeof data?.description === "string" ? data.description.replace(/\s+/g, " ").trim() : undefined };
+    // License, author, version or metadata keys are how published packs describe themselves; a hand-written skill rarely has them.
+    const packaged = !!data && ["license", "author", "version", "metadata", "compatibility"].some((k) => k in data);
+    return { packaged, name: typeof data?.name === "string" ? data.name : undefined, description: typeof data?.description === "string" ? data.description.replace(/\s+/g, " ").trim() : undefined };
   } catch { return {}; }
 }
 
@@ -337,12 +339,15 @@ async function scanSkills(home: string, removables: Map<string, Removable>, note
       const isLink = info.isSymbolicLink();
       const real = await realpath(path).catch(() => undefined);
       const target = real ? await stat(real).catch(() => null) : null;
-      const base = { id: `skill:${path}`, path, kind: spec.kind, tool: spec.tool, isLink, category: "Other" as const, ...(managed ? { managed } : {}) };
+      const base = { id: `skill:${path}`, path, kind: spec.kind, tool: spec.tool, isLink, category: "Other" as const, origin: (managed ? "built-in" : "other") as AiSkillEntry["origin"], ...(managed ? { managed } : {}) };
       const removable = !managed;
       const register = (e: AiSkillEntry) => {
         if (removable) removables.set(e.id, { id: e.id, name: e.name, path, root, action: "trash", bytes: e.bytes, reclaimBytes: e.reclaimBytes,
           warnings: e.isLink ? [`Only the link is removed; the original at ${e.realPath ?? "its target"} stays.`] : [] });
-        e.category = categorizeSkill(e.name, e.broken ? "" : e.description);
+        const folder = e.realPath ?? e.path;
+        if (e.origin === "other" && e.kind === "skill" && isMatrixSkill(e.name, folder)) e.origin = "matrix";
+        if (e.origin === "other" && e.kind === "skill" && isMatrixSkill(basename(e.path), e.path)) e.origin = "matrix";
+        e.category = e.origin === "matrix" ? "Matrix Standards" : categorizeSkill(e.name, e.broken ? "" : e.description);
         entries.push(e);
       };
       if (isLink && !target) {
@@ -357,9 +362,16 @@ async function scanSkills(home: string, removables: Map<string, Removable>, note
         if (text === null) return;
         const meta = frontmatter(text), tree = await hashTree(real!);
         const skillName = meta.name || name;
+        const provenance = managed ? undefined : await readFile(join(real!, ".source"), "utf8").catch(() => null);
+        const licensed = managed ? false : (await readdir(real!).catch(() => [] as string[])).some((f) => /^licen[cs]e/i.test(f));
+        if (!managed && (provenance || meta.packaged || licensed)) {
+          base.origin = "installed";
+          (base as { originDetail?: string }).originDetail = provenance ? provenance.split("\n")[0].replace(/^Installed from /, "").slice(0, 200) : meta.packaged ? "Has license or author metadata" : "Includes a LICENSE file";
+        }
         register({ ...base, name: skillName, description: meta.description ?? "No description.", broken: false, realPath: real, hash: tree.hash, bytes: tree.bytes,
           reclaimBytes: isLink ? 0 : tree.bytes, howToUse: skillHint({ kind: "skill", tool: spec.tool, name: skillName }),
-          modified: target.mtime.toISOString(), removable } as AiSkillEntry);
+          // A folder's own timestamp does not change when a file inside is edited, so use SKILL.md's.
+          modified: (await stat(join(real!, "SKILL.md")).catch(() => target)).mtime.toISOString(), removable } as AiSkillEntry);
         return;
       }
       if (!target.isFile() || !name.endsWith(".md")) return;
@@ -440,25 +452,40 @@ async function countPluginSkills(home: string): Promise<number> {
 
 function skillDuplicates(skills: AiSkillEntry[]): AiDuplicateGroup[] {
   const groups: AiDuplicateGroup[] = [];
-  const byName = new Map<string, AiSkillEntry[]>();
-  for (const s of skills) if (!s.broken && !s.managed) byName.set(`${s.kind}:${s.name}`, [...(byName.get(`${s.kind}:${s.name}`) ?? []), s]);
+  const candidates = skills.filter((s) => !s.broken && !s.managed);
+  // The same skill is often installed under two display names ("Matrix API Standards" and "matrix-api") that share a folder
+  // name, so entries are joined when either their name or their folder name matches.
+  const parent = new Map<AiSkillEntry, AiSkillEntry>();
+  const find = (e: AiSkillEntry): AiSkillEntry => { let r = e; while (parent.get(r) && parent.get(r) !== r) r = parent.get(r)!; return r; };
+  const seen = new Map<string, AiSkillEntry>();
+  for (const e of candidates) {
+    parent.set(e, e);
+    const keys = [`name:${e.kind}:${e.name.toLowerCase()}`];
+    if (e.kind === "skill") keys.push(`folder:${basename(e.realPath ?? e.path).toLowerCase()}`);
+    for (const k of keys) { const other = seen.get(k); if (other) parent.set(find(e), find(other)); else seen.set(k, e); }
+  }
+  const byRoot = new Map<AiSkillEntry, AiSkillEntry[]>();
+  for (const e of candidates) byRoot.set(find(e), [...(byRoot.get(find(e)) ?? []), e]);
   const rank = (s: AiSkillEntry) => (s.tool === "agents" ? 0 : s.tool === "claude" ? 1 : 2) + (s.isLink ? 10 : 0);
-  for (const [key, items] of byName) {
+  for (const items of byRoot.values()) {
     const real = new Map<string, AiSkillEntry[]>();
     for (const s of items) real.set(s.realPath ?? s.path, [...(real.get(s.realPath ?? s.path) ?? []), s]);
     // Several links to one folder are one skill installed once, not a duplicate.
     if (real.size < 2) continue;
     const copies = [...real.values()].map((list) => [...list].sort((a, b) => rank(a) - rank(b))[0]);
     const identical = new Set(copies.map((c) => c.hash)).size === 1;
-    const keep = [...copies].sort((a, b) => rank(a) - rank(b))[0];
+    // Identical copies: keep the shared one. Different copies: suggest the most recently changed, which is usually the maintained one.
+    const keep = [...copies].sort((a, b) => (identical ? 0 : (b.modified ?? "").localeCompare(a.modified ?? "")) || rank(a) - rank(b))[0];
     const others = items.filter((s) => (s.realPath ?? s.path) !== (keep.realPath ?? keep.path));
+    const names = new Set(items.map((i) => i.name));
+    const name = names.size > 1 && keep.kind === "skill" ? basename(keep.realPath ?? keep.path) : items[0].name;
     groups.push({
-      id: `dup:skill:${key}`, subject: "skill", name: items[0].name,
+      id: `dup:skill:${items.map((i) => i.id).sort()[0]}`, subject: "skill", name,
       verdict: identical ? "identical" : "different", itemIds: items.map((i) => i.id), keepId: keep.id,
       reclaimBytes: others.reduce((a, i) => a + i.reclaimBytes, 0),
       note: identical
         ? `${real.size} separate copies with identical content. Keep one and remove the rest (or replace them with links).`
-        : `${real.size} separate copies with the same name but different content. Compare them before deleting; the newest is not necessarily the best.`,
+        : `${real.size} separate copies with different content${names.size > 1 ? ` under different names (${[...names].slice(0, 3).join(", ")})` : ""}. The most recently changed one is suggested; compare before deleting.`,
     });
   }
   return groups;

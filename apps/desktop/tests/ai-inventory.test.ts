@@ -361,3 +361,44 @@ describe("which apps use a model", () => {
     await expect(usageKit().scanUsage()).rejects.toThrow("Scan first");
   });
 });
+
+describe("duplicates under different display names", () => {
+  test("two copies of the same skill folder are grouped even when their display names differ, suggesting the newer one", async () => {
+    await write(join(home, ".gemini/config/skills/matrix-go/SKILL.md"), skill("Matrix Go Standards", "old"));
+    await write(join(home, "Standards/skills/matrix-go/SKILL.md"), skill("matrix-go", "new and longer"));
+    await mkdir(join(home, ".agents/skills"), { recursive: true });
+    await symlink(join(home, "Standards/skills/matrix-go"), join(home, ".agents/skills/matrix-go"));
+    const { utimes } = await import("node:fs/promises");
+    await utimes(join(home, ".gemini/config/skills/matrix-go/SKILL.md"), new Date("2026-04-01"), new Date("2026-04-01"));
+    const inv = await kit.scan();
+    expect(inv.duplicates).toHaveLength(1);
+    const group = inv.duplicates[0];
+    expect(group).toMatchObject({ name: "matrix-go", verdict: "different" });
+    expect(group.itemIds).toHaveLength(2);
+    const keep = inv.skills.find((s) => s.id === group.keepId)!;
+    expect(keep.realPath).toBe(realpathSync(join(home, "Standards/skills/matrix-go")));
+    expect(group.note).toContain("Matrix Go Standards");
+  });
+});
+
+describe("skill origin", () => {
+  test("Matrix standards are their own category, and installed packs, built-ins and your own skills are told apart", async () => {
+    await write(join(home, "Developer/Matrix/Coding Standard/skills/check-cicd/SKILL.md"), skill("check-cicd", "Check the CI/CD pipeline"));
+    await mkdir(join(home, ".agents/skills"), { recursive: true });
+    await symlink(join(home, "Developer/Matrix/Coding Standard/skills/check-cicd"), join(home, ".agents/skills/check-cicd"));
+    await write(join(home, ".claude/skills/matrix-go/SKILL.md"), skill("matrix-go", "Go conventions"));
+    await write(join(home, ".claude/skills/tdd/SKILL.md"), skill("tdd", "Test first"));
+    await write(join(home, ".claude/skills/tdd/.source"), "Installed from https://github.com/example/pack at commit abc123 (reviewed).\n");
+    await write(join(home, ".claude/skills/pdf/SKILL.md"), "---\nname: pdf\ndescription: Work with PDFs\nlicense: Apache-2.0\n---\n");
+    await write(join(home, ".claude/skills/mine/SKILL.md"), skill("mine", "My own notes helper"));
+    await write(join(home, ".codex/skills/.system/imagegen/SKILL.md"), skill("imagegen", "Make images"));
+    const inv = await kit.scan();
+    const of = (name: string) => inv.skills.find((s) => s.name === name)!;
+    expect(of("check-cicd")).toMatchObject({ origin: "matrix", category: "Matrix Standards" });
+    expect(of("matrix-go")).toMatchObject({ origin: "matrix", category: "Matrix Standards" });
+    expect(of("tdd")).toMatchObject({ origin: "installed", originDetail: "https://github.com/example/pack at commit abc123 (reviewed)." });
+    expect(of("pdf").origin).toBe("installed");
+    expect(of("mine").origin).toBe("other");
+    expect(of("imagegen").origin).toBe("built-in");
+  });
+});

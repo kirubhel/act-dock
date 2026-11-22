@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { api, revealPath } from "@/lib/api";
 import { Empty, fail } from "./common";
 import { AI_INSTALL_TARGETS, AI_SKILL_CATEGORIES } from "../../shared/contracts";
-import type { AiDuplicateGroup, AiInstallTarget, AiInventory, AiItemBase, AiRemovalResult, AiSkillEntry, AiUsage } from "../../shared/contracts";
+import type { AiDuplicateGroup, AiInstallTarget, AiInventory, AiItemBase, AiRemovalResult, AiSkillEntry, AiSkillOrigin, AiUsage } from "../../shared/contracts";
 
 const bytesLabel = (n: number) => {
   if (n < 1024) return `${n} B`;
@@ -28,13 +28,13 @@ type Pending =
   | { kind: "install"; ids: string[]; targets: AiInstallTarget[]; mode: "link" | "copy"; result?: AiRemovalResult; loading: boolean; error?: string };
 
 /** Everything the toolkit knows about one skill name across the tools that hold it. */
-type SkillGroup = { key: string; name: string; category: string; description: string; howToUse: string; entries: AiSkillEntry[]; source?: AiSkillEntry };
+type SkillGroup = { key: string; name: string; category: string; origin: AiSkillOrigin; originDetail?: string; description: string; howToUse: string; entries: AiSkillEntry[]; source?: AiSkillEntry };
 
 function groupSkills(skills: AiSkillEntry[]): SkillGroup[] {
   const groups = new Map<string, SkillGroup>();
   for (const s of skills.filter((e) => e.kind === "skill")) {
     const key = s.name.toLowerCase();
-    const g = groups.get(key) ?? { key, name: s.name, category: s.category, description: s.description, howToUse: s.howToUse, entries: [] };
+    const g = groups.get(key) ?? { key, name: s.name, category: s.category, origin: s.origin, description: s.description, howToUse: s.howToUse, entries: [] };
     g.entries.push(s);
     groups.set(key, g);
   }
@@ -44,6 +44,10 @@ function groupSkills(skills: AiSkillEntry[]): SkillGroup[] {
     g.source = usable.find((e) => !e.isLink) ?? usable[0];
     const described = g.entries.find((e) => !e.broken) ?? g.entries[0];
     g.description = described.description; g.howToUse = described.howToUse; g.category = described.category;
+    // The most specific origin any copy has: a Matrix standard stays one even if a tool also bundles a copy.
+    const rank: AiSkillOrigin[] = ["matrix", "installed", "built-in", "other"];
+    const best = [...g.entries].sort((a, b) => rank.indexOf(a.origin) - rank.indexOf(b.origin))[0];
+    g.origin = best.origin; g.originDetail = best.originDetail;
   }
   return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -59,6 +63,8 @@ export function AiToolkitView() {
   const [applying, setApplying] = useState(false);
   const [filter, setFilter] = useState("");
   const [category, setCategory] = useState<string>("all");
+  // Separates packs installed from repos from your own skills and tool built-ins.
+  const [origin, setOrigin] = useState<"all" | "installed" | "built-in" | "own">("all");
   // Which copy to keep in each duplicate group; unset means the scan's suggestion.
   const [keep, setKeep] = useState<Record<string, string>>({});
   const generation = useRef(0);
@@ -111,13 +117,16 @@ export function AiToolkitView() {
   }
 
   const q = filter.trim().toLowerCase();
-  const matches = (g: SkillGroup) => (category === "all" || g.category === category) && (!q || `${g.name} ${g.description} ${g.category}`.toLowerCase().includes(q));
+  const inOrigin = (g: SkillGroup) => origin === "all" || (origin === "own" ? g.origin === "matrix" || g.origin === "other" : g.origin === origin);
+  const matches = (g: SkillGroup) => inOrigin(g) && (category === "all" || g.category === category) && (!q || `${g.name} ${g.description} ${g.category}`.toLowerCase().includes(q));
   const visibleGroups = groups.filter(matches);
   const counts = useMemo(() => {
     const out = new Map<string, number>();
-    for (const g of groups) out.set(g.category, (out.get(g.category) ?? 0) + 1);
+    for (const g of groups) if (inOrigin(g)) out.set(g.category, (out.get(g.category) ?? 0) + 1);
     return out;
-  }, [groups]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, origin]);
+  const originCounts = { all: groups.length, installed: groups.filter((g) => g.origin === "installed").length, "built-in": groups.filter((g) => g.origin === "built-in").length, own: groups.filter((g) => g.origin === "matrix" || g.origin === "other").length };
   const others = (inventory?.skills ?? []).filter((s) => s.kind !== "skill" && (!q || `${s.name} ${s.description}`.toLowerCase().includes(q)));
   const totalModelBytes = (inventory?.models ?? []).reduce((a, m) => a + m.bytes, 0);
   const brokenCount = (inventory?.skills ?? []).filter((s) => s.broken).length;
@@ -238,10 +247,17 @@ export function AiToolkitView() {
 
           <TabsContent value="skills">
             <div className="ai-filter"><Search className="size-3.5" /><Input aria-label="Filter skills" placeholder="Filter by name or description" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+            <div className="ai-chips" role="group" aria-label="Where skills came from">
+              {([["all", "Everything"], ["own", "Yours and Matrix"], ["installed", "Installed from repos"], ["built-in", "Built into tools"]] as const).map(([key, label]) => (
+                <button key={key} type="button" className="ai-chip" aria-pressed={origin === key} onClick={() => { setOrigin(key); setCategory("all"); }}>
+                  {label}<span>{originCounts[key]}</span>
+                </button>
+              ))}
+            </div>
             <div className="ai-chips" role="group" aria-label="Skill category">
               {["all", ...AI_SKILL_CATEGORIES].filter((c) => c === "all" || counts.has(c)).map((c) => (
                 <button key={c} type="button" className="ai-chip" aria-pressed={category === c} onClick={() => setCategory(c)}>
-                  {c === "all" ? "All" : c}<span>{c === "all" ? groups.length : counts.get(c)}</span>
+                  {c === "all" ? "All categories" : c}<span>{c === "all" ? groups.filter(inOrigin).length : counts.get(c)}</span>
                 </button>
               ))}
             </div>
@@ -266,7 +282,7 @@ export function AiToolkitView() {
                   return (
                     <li key={g.key} className="ai-skill-row">
                       <div className="ai-row-main">
-                        <div className="ai-row-title"><strong>{g.name}</strong>{category === "all" && <Badge variant="outline">{g.category}</Badge>}</div>
+                        <div className="ai-row-title"><strong>{g.name}</strong>{category === "all" && <Badge variant="outline">{g.category}</Badge>}{g.origin === "installed" && <Badge variant="secondary" title={g.originDetail}>installed</Badge>}{g.origin === "built-in" && <Badge variant="outline">built in</Badge>}</div>
                         <p className="ai-row-desc">{g.description}</p>
                         <p className="ai-row-use"><span>How to use:</span> {g.howToUse}</p>
                       </div>

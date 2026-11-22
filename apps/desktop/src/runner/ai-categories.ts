@@ -19,6 +19,9 @@ const RULES: [AiSkillCategory, RegExp][] = [
 
 const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;
 
+/** Skills that are part of your own Matrix standards, by where they live or what they are called. */
+export const isMatrixSkill = (name: string, folder: string) => /(^|[\\/])Matrix[\\/]/.test(folder) || /^matrix[\s-]/i.test(name) || /(^|[\\/])matrix-[^\\/]*$/i.test(folder);
+
 export function categorizeSkill(name: string, description: string): AiSkillCategory {
   let best: AiSkillCategory = "Other", bestScore = 0;
   for (const [category, re] of RULES) {
