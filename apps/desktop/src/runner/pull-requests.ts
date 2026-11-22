@@ -1,4 +1,4 @@
-import { AppError, type Project, type PullRequestDecision, type PullRequestDetail, type PullRequestFile, type PullRequestList, type PullRequestReviewResult, type PullRequestSummary } from "../shared/contracts";
+import { AppError, type Project, type PullRequestDecision, type PullRequestDetail, type PullRequestFile, type PullRequestCheckStatus, type PullRequestList, type PullRequestMergeable, type PullRequestReviewDecision, type PullRequestReviewResult, type PullRequestSummary } from "../shared/contracts";
 import { json, projectRemoteAndToken, requestApi, type parseRemote } from "./branch-pipelines";
 import { Store } from "./store";
 
@@ -35,51 +35,139 @@ type GhPull = {
   number: number; title: string; draft?: boolean; html_url: string; updated_at: string;
   user?: { login: string } | null; head: { ref: string; sha: string }; base: { ref: string }; body?: string | null;
   requested_reviewers?: { login: string }[]; requested_teams?: { slug: string }[];
-  review_decision?: string | null; mergeable?: boolean | null; mergeable_state?: string;
-  statusCheckRollup?: { state?: string }[] | null;
+  mergeable?: boolean | null; mergeable_state?: string;
 };
 type GlMr = {
   iid: number; title: string; draft?: boolean; web_url: string; updated_at: string; sha?: string | null;
   author?: { username: string } | null; source_branch: string; target_branch: string; description?: string | null;
-  reviewers?: { username: string }[]; approved?: boolean; detailed_merge_status?: string; merge_status?: string;
+  reviewers?: { username: string }[]; detailed_merge_status?: string; has_conflicts?: boolean;
   head_pipeline?: { status?: string } | null;
 };
+type GhReview = { user?: { login: string } | null; state: string };
+type GhCheckRuns = { check_runs: { status: string; conclusion: string | null }[] };
+type GhCombinedStatus = { state: string; total_count?: number };
+type GlApprovalState = { rules?: { approvals_required?: number; approved?: boolean; approved_by?: unknown[] }[] };
 
-function mapCheckStatus(statuses: { state?: string }[] | null | undefined) {
-  if (!statuses) return "unknown" as const;
-  if (!statuses.length) return "pending" as const;
-  const states = statuses.map((s) => (s.state || "").toUpperCase());
-  if (states.includes("FAILURE") || states.includes("ERROR")) return "failure" as const;
-  if (states.every((s) => s === "SUCCESS" || s === "EXPECTED")) return "success" as const;
-  return "pending" as const;
+const MAX_ENRICHED = 50;
+const ENRICH_CONCURRENCY = 5;
+
+/** GitHub only fills `mergeable` on the single-PR endpoint, and returns null while it computes it. */
+export function githubMergeable(pr: Pick<GhPull, "mergeable" | "mergeable_state">): PullRequestMergeable {
+  if (pr.mergeable === false || pr.mergeable_state === "dirty") return "conflicting";
+  return pr.mergeable === true ? "clean" : "unknown";
+}
+
+/** Approximates GitHub's review decision from each reviewer's latest review. Branch protection rules are not visible to us. */
+export function githubReviewDecision(reviews: GhReview[] | undefined): PullRequestReviewDecision {
+  if (!reviews) return "unknown";
+  const latest = new Map<string, string>();
+  for (const review of reviews) {
+    const who = (review.user?.login || "").toLowerCase();
+    if (!who) continue;
+    if (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED") latest.set(who, review.state);
+    else if (review.state === "DISMISSED") latest.delete(who);
+  }
+  const states = [...latest.values()];
+  if (states.includes("CHANGES_REQUESTED")) return "changes_requested";
+  return states.includes("APPROVED") ? "approved" : "review_required";
+}
+
+const FAILED_RUN = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"]);
+const PASSED_RUN = new Set(["success", "neutral", "skipped"]);
+
+export function githubCheckStatus(runs: GhCheckRuns | undefined, status: GhCombinedStatus | undefined): PullRequestCheckStatus {
+  const items = runs?.check_runs ?? [];
+  const legacy = status && (status.total_count ?? 1) > 0 ? status.state : undefined;
+  if (items.some((r) => r.status === "completed" && FAILED_RUN.has(r.conclusion || "")) || legacy === "failure" || legacy === "error") return "failure";
+  // One source failing to load means a failure there would be invisible, so do not claim success or pending.
+  if (!runs || !status) return "unknown";
+  if (items.some((r) => r.status !== "completed") || legacy === "pending") return "pending";
+  if (items.length === 0 && !legacy) return "unknown";
+  return items.every((r) => PASSED_RUN.has(r.conclusion || "")) ? "success" : "unknown";
+}
+
+export function gitlabReviewDecision(state: GlApprovalState | undefined): PullRequestReviewDecision {
+  if (!state?.rules) return "unknown";
+  const required = state.rules.filter((rule) => (rule.approvals_required ?? 0) > 0);
+  if (required.length) return required.every((rule) => rule.approved) ? "approved" : "review_required";
+  return state.rules.some((rule) => (rule.approved_by?.length ?? 0) > 0) ? "approved" : "unknown";
+}
+
+export function gitlabCheckStatus(pipeline: GlMr["head_pipeline"]): PullRequestCheckStatus {
+  const status = (pipeline?.status || "").toLowerCase();
+  if (!status || status === "skipped") return "unknown";
+  if (status === "success") return "success";
+  if (status === "failed" || status === "canceled") return "failure";
+  return ["created", "waiting_for_resource", "preparing", "pending", "running", "scheduled", "manual"].includes(status) ? "pending" : "unknown";
+}
+
+export function gitlabMergeable(mr: Pick<GlMr, "has_conflicts" | "detailed_merge_status">): PullRequestMergeable {
+  const status = (mr.detailed_merge_status || "").toLowerCase();
+  if (mr.has_conflicts === true || status === "conflict") return "conflicting";
+  if (["checking", "unchecked", "preparing"].includes(status)) return "unknown";
+  return mr.has_conflicts === false ? "clean" : "unknown";
 }
 
 function summarize(remote: Remote, raw: GhPull | GlMr, me: string | undefined): PullRequestSummary {
+  const viewerIsRequested = (names: string[]) => (me ? names.some((name) => name.toLowerCase() === me) : "unknown" as const);
   if (remote.provider === "github") {
     const pr = raw as GhPull, author = pr.user?.login || "unknown";
     const requested = pr.requested_reviewers?.map((r) => r.login) || [];
-    const state = (pr.review_decision || "").toLowerCase();
     return { number: pr.number, title: pr.title, author, own: !!me && author.toLowerCase() === me, draft: !!pr.draft,
       branch: pr.head.ref, base: pr.base.ref, url: pr.html_url, updatedAt: pr.updated_at, headSha: pr.head.sha,
       reviewers: pr.requested_reviewers ? [...requested, ...(pr.requested_teams || []).map((t) => `team:${t.slug}`)] : "unknown",
-      reviewDecision: !me || !pr.review_decision ? "unknown" : state === "approved" ? "approved" : state === "changes_requested" ? "changes_requested" : "review_required",
-      checkStatus: mapCheckStatus(pr.statusCheckRollup),
-      // GitHub's list endpoint normally returns null; Task B fetches GET /pulls/{n} for this field.
-      mergeable: pr.mergeable === true ? "clean" : pr.mergeable === false ? "conflicting" : "unknown",
-      isCurrentUserRequestedReviewer: me ? requested.some((r) => r.toLowerCase() === me) : "unknown" };
+      reviewDecision: "unknown", checkStatus: "unknown", mergeable: githubMergeable(pr),
+      isCurrentUserRequestedReviewer: viewerIsRequested(requested) };
   }
   const mr = raw as GlMr, author = mr.author?.username || "unknown";
   const requested = mr.reviewers?.map((r) => r.username) || [];
-  const merge = (mr.detailed_merge_status || mr.merge_status || "").toLowerCase();
-  const pipeline = (mr.head_pipeline?.status || "").toLowerCase();
   return { number: mr.iid, title: mr.title, author, own: !!me && author.toLowerCase() === me, draft: !!mr.draft,
     branch: mr.source_branch, base: mr.target_branch, url: mr.web_url, updatedAt: mr.updated_at, headSha: mr.sha || "",
     reviewers: mr.reviewers ? requested : "unknown",
-    reviewDecision: !me || mr.approved === undefined ? "unknown" : mr.approved ? "approved" : "review_required",
-    checkStatus: !mr.head_pipeline ? "unknown" : pipeline === "success" ? "success" : ["failed", "canceled", "skipped"].includes(pipeline) ? "failure" : "pending",
-    mergeable: merge ? (merge.includes("conflict") ? "conflicting" : merge === "mergeable" || merge === "can_be_merged" ? "clean" : "unknown") : "unknown",
-    isCurrentUserRequestedReviewer: me ? requested.some((r) => r.toLowerCase() === me) : "unknown" };
+    reviewDecision: "unknown", checkStatus: gitlabCheckStatus(mr.head_pipeline), mergeable: gitlabMergeable(mr),
+    isCurrentUserRequestedReviewer: viewerIsRequested(requested) };
 }
+
+/** A sub-request that fails (no permission, rate limit, timeout) only blanks its own field. */
+async function settle<T>(request: Promise<T>): Promise<T | undefined> {
+  try { return await request; } catch { return undefined; }
+}
+
+/**
+ * Fills reviewDecision, checkStatus and mergeable, which the list endpoints do not return.
+ * `detail` is the single PR/MR when the caller already fetched it, so it is not requested twice.
+ * These fields never depend on the authenticated viewer.
+ */
+async function enrich(remote: Remote, h: Record<string, string>, summary: PullRequestSummary, detail?: GhPull | GlMr): Promise<PullRequestSummary> {
+  if (remote.provider === "github") {
+    const base = `${remote.api}/repos/${remote.repository}`, n = summary.number, sha = summary.headSha;
+    const [pr, reviews, runs, status] = await Promise.all([
+      detail ? Promise.resolve(detail as GhPull) : settle(json<GhPull>(`${base}/pulls/${n}`, h)),
+      settle(json<GhReview[]>(`${base}/pulls/${n}/reviews?per_page=100`, h)),
+      sha ? settle(json<GhCheckRuns>(`${base}/commits/${sha}/check-runs?per_page=100`, h)) : undefined,
+      sha ? settle(json<GhCombinedStatus>(`${base}/commits/${sha}/status`, h)) : undefined,
+    ]);
+    return { ...summary, mergeable: pr ? githubMergeable(pr) : summary.mergeable,
+      reviewDecision: githubReviewDecision(reviews), checkStatus: githubCheckStatus(runs, status) };
+  }
+  const base = `${gitlabBase(remote)}/merge_requests/${summary.number}`;
+  const [mr, approvals] = await Promise.all([
+    detail ? Promise.resolve(detail as GlMr) : settle(json<GlMr>(base, h)),
+    settle(json<GlApprovalState>(`${base}/approval_state`, h)),
+  ]);
+  return { ...summary, reviewDecision: gitlabReviewDecision(approvals),
+    ...(mr ? { checkStatus: gitlabCheckStatus(mr.head_pipeline), mergeable: gitlabMergeable(mr) } : {}) };
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
+  }));
+  return out;
+}
+
 
 export async function listPullRequests(store: Store, project: Project): Promise<PullRequestList> {
   const { remote, token } = await projectRemoteAndToken(store, project);
@@ -93,7 +181,9 @@ export async function fetchPullRequests(remote: Remote, token: string): Promise<
     : `${gitlabBase(remote)}/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=30`;
   const [items, me] = await Promise.all([json<(GhPull | GlMr)[]>(url, h), viewer(remote, token)]);
   const { provider, repository, host } = remote;
-  return { provider, repository, host, ...(me ? { viewer: me } : {}), pullRequests: items.map((item) => summarize(remote, item, me)) };
+  const summaries = items.map((item) => summarize(remote, item, me));
+  const enriched = await mapLimit(summaries.slice(0, MAX_ENRICHED), ENRICH_CONCURRENCY, (pr) => enrich(remote, h, pr));
+  return { provider, repository, host, ...(me ? { viewer: me } : {}), pullRequests: [...enriched, ...summaries.slice(MAX_ENRICHED)] };
 }
 
 export async function getPullRequest(store: Store, project: Project, number: number): Promise<PullRequestDetail> {
@@ -120,7 +210,7 @@ export async function fetchPullRequest(remote: Remote, token: string, number: nu
       if (batch.length < 100) break;
       if (page === MAX_FILES / 100) truncated = true;
     }
-    return { ...summarize(remote, pr, me), provider, repository, host, body: pr.body || "", files, truncated };
+    return { ...(await enrich(remote, h, summarize(remote, pr, me), pr)), provider, repository, host, body: pr.body || "", files, truncated };
   }
   const base = `${gitlabBase(remote)}/merge_requests/${number}`;
   const [mr, me] = await Promise.all([json<GlMr>(base, h), viewer(remote, token)]);
@@ -137,7 +227,7 @@ export async function fetchPullRequest(remote: Remote, token: string, number: nu
     if (batch.length < 100) break;
     if (page === MAX_FILES / 100) truncated = true;
   }
-  return { ...summarize(remote, mr, me), provider, repository, host, body: mr.description || "", files, truncated };
+  return { ...(await enrich(remote, h, summarize(remote, mr, me), mr)), provider, repository, host, body: mr.description || "", files, truncated };
 }
 
 export async function submitPullRequestReview(

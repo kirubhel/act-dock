@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { parseRemote } from "../src/runner/branch-pipelines";
-import { fetchPullRequest, fetchPullRequests, sendReview, submitPullRequestReview } from "../src/runner/pull-requests";
+import {
+  fetchPullRequest, fetchPullRequests, githubCheckStatus, githubMergeable, githubReviewDecision, gitlabCheckStatus, gitlabMergeable, gitlabReviewDecision,
+  sendReview, submitPullRequestReview,
+} from "../src/runner/pull-requests";
 import { parseReview } from "../src/runner/claude-review";
 
 const originalFetch = globalThis.fetch;
@@ -85,4 +88,110 @@ test("Claude review output is normalized and prose is preserved", () => {
   expect(review.findings).toEqual([{ severity: "high", comment: "Wrong op", file: "a.ts", line: 3 }, { severity: "low", comment: "x" }]);
   expect(parseReview("Looks fine overall.")).toEqual({ verdict: null, summary: "Looks fine overall.", findings: [], reviewBody: "" });
   expect(parseReview('{"verdict":"merge","summary":"s"}').verdict).toBeNull();
+});
+
+/** Like mock(), but a numeric route value is returned as that HTTP status. Routes are matched in order, so list specific ones first. */
+function mockStatus(routes: Record<string, unknown>) {
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const key = Object.keys(routes).find((k) => String(url).includes(k));
+    if (!key) return new Response("{}", { status: 404 });
+    const value = routes[key];
+    return typeof value === "number" ? new Response("{}", { status: value }) : Response.json(value);
+  }) as typeof fetch;
+}
+const ghPull = (n: number, extra: object = {}) => ({
+  number: n, title: `PR ${n}`, user: { login: "bob" }, head: { ref: "f", sha: `sha${n}` }, base: { ref: "main" },
+  html_url: `https://github.com/team/repo/pull/${n}`, updated_at: "2026-11-20T00:00:00Z", requested_reviewers: [{ login: "Me" }], ...extra,
+});
+
+test("GitHub PR state comes from reviews, checks and the single-PR endpoint", async () => {
+  mockStatus({
+    "/user": { login: "me" },
+    "/pulls/7/reviews": [
+      { user: { login: "ann" }, state: "CHANGES_REQUESTED" }, { user: { login: "ann" }, state: "APPROVED" },
+      { user: { login: "cat" }, state: "COMMENTED" },
+    ],
+    "/pulls/7": { ...ghPull(7), mergeable: false },
+    "/commits/sha7/check-runs": { check_runs: [{ status: "completed", conclusion: "success" }, { status: "completed", conclusion: "failure" }] },
+    "/commits/sha7/status": { state: "pending", total_count: 0 },
+    "/pulls?": [ghPull(7)],
+  });
+  const [pr] = (await fetchPullRequests(github, "t")).pullRequests;
+  expect(pr).toMatchObject({ reviewers: ["Me"], reviewDecision: "approved", checkStatus: "failure", mergeable: "conflicting", isCurrentUserRequestedReviewer: true });
+});
+
+test("a forbidden sub-request blanks only its own field", async () => {
+  mockStatus({
+    "/user": { login: "me" },
+    "/pulls/7/reviews": 403,
+    "/pulls/7": { ...ghPull(7), mergeable: true },
+    "/commits/sha7/check-runs": { check_runs: [{ status: "completed", conclusion: "success" }] },
+    "/commits/sha7/status": { state: "success", total_count: 1 },
+    "/pulls?": [ghPull(7)],
+  });
+  const [pr] = (await fetchPullRequests(github, "t")).pullRequests;
+  expect(pr).toMatchObject({ reviewDecision: "unknown", checkStatus: "success", mergeable: "clean" });
+});
+
+test("review, check and merge state do not depend on the viewer", async () => {
+  mockStatus({
+    "/user": 401,
+    "/pulls/7/reviews": [{ user: { login: "ann" }, state: "APPROVED" }],
+    "/pulls/7": { ...ghPull(7), mergeable: true },
+    "/commits/sha7/check-runs": { check_runs: [{ status: "completed", conclusion: "success" }] },
+    "/commits/sha7/status": { state: "success", total_count: 1 },
+    "/pulls?": [ghPull(7)],
+  });
+  const list = await fetchPullRequests(github, "t");
+  expect(list.viewer).toBeUndefined();
+  expect(list.pullRequests[0]).toMatchObject({ reviewDecision: "approved", checkStatus: "success", mergeable: "clean", isCurrentUserRequestedReviewer: "unknown" });
+});
+
+test("GitLab MR state comes from approval_state and the single-MR endpoint", async () => {
+  const mr = { iid: 3, title: "T", author: { username: "ann" }, reviewers: [{ username: "me" }], source_branch: "f", target_branch: "main", web_url: "u", updated_at: "x", sha: "aaaaaaa" };
+  mockStatus({
+    "/user": { username: "me" },
+    "/merge_requests/3/approval_state": { rules: [{ approvals_required: 1, approved: false, approved_by: [] }] },
+    "/merge_requests/3": { ...mr, has_conflicts: false, detailed_merge_status: "not_approved", head_pipeline: { status: "running" } },
+    "/merge_requests?": [mr],
+  });
+  const [item] = (await fetchPullRequests(gitlab, "t")).pullRequests;
+  expect(item).toMatchObject({ reviewers: ["me"], reviewDecision: "review_required", checkStatus: "pending", mergeable: "clean", isCurrentUserRequestedReviewer: true });
+});
+
+test("GitLab without pipeline visibility or approval access stays unknown", async () => {
+  const mr = { iid: 3, title: "T", author: { username: "ann" }, source_branch: "f", target_branch: "main", web_url: "u", updated_at: "x", sha: "aaaaaaa" };
+  mockStatus({ "/user": 401, "/merge_requests/3": 403, "/merge_requests?": [mr] });
+  const [item] = (await fetchPullRequests(gitlab, "t")).pullRequests;
+  expect(item).toMatchObject({ reviewers: "unknown", reviewDecision: "unknown", checkStatus: "unknown", mergeable: "unknown", isCurrentUserRequestedReviewer: "unknown" });
+});
+
+test("GitHub review decision uses each reviewer's latest review", () => {
+  expect(githubReviewDecision(undefined)).toBe("unknown");
+  expect(githubReviewDecision([])).toBe("review_required");
+  expect(githubReviewDecision([{ user: { login: "a" }, state: "CHANGES_REQUESTED" }, { user: { login: "a" }, state: "DISMISSED" }])).toBe("review_required");
+  expect(githubReviewDecision([{ user: { login: "a" }, state: "APPROVED" }, { user: { login: "b" }, state: "CHANGES_REQUESTED" }])).toBe("changes_requested");
+});
+
+test("GitHub check status covers none, pending, failing and partial data", () => {
+  const ok = { check_runs: [{ status: "completed", conclusion: "success" }] };
+  expect(githubCheckStatus({ check_runs: [] }, { state: "pending", total_count: 0 })).toBe("unknown");
+  expect(githubCheckStatus({ check_runs: [{ status: "in_progress", conclusion: null }] }, { state: "success", total_count: 1 })).toBe("pending");
+  expect(githubCheckStatus(ok, { state: "failure", total_count: 1 })).toBe("failure");
+  expect(githubCheckStatus(ok, { state: "success", total_count: 1 })).toBe("success");
+  expect(githubCheckStatus(ok, undefined)).toBe("unknown");
+  expect(githubCheckStatus({ check_runs: [{ status: "completed", conclusion: "failure" }] }, undefined)).toBe("failure");
+});
+
+test("mergeable and GitLab helpers map provider values", () => {
+  expect(githubMergeable({ mergeable: null })).toBe("unknown");
+  expect(githubMergeable({ mergeable: true, mergeable_state: "dirty" })).toBe("conflicting");
+  expect(gitlabMergeable({ has_conflicts: false, detailed_merge_status: "checking" })).toBe("unknown");
+  expect(gitlabMergeable({ detailed_merge_status: "conflict" })).toBe("conflicting");
+  expect(gitlabCheckStatus({ status: "failed" })).toBe("failure");
+  expect(gitlabCheckStatus({ status: "skipped" })).toBe("unknown");
+  expect(gitlabCheckStatus(null)).toBe("unknown");
+  expect(gitlabReviewDecision({ rules: [{ approvals_required: 2, approved: true }, { approvals_required: 1, approved: true }] })).toBe("approved");
+  expect(gitlabReviewDecision({ rules: [] })).toBe("unknown");
+  expect(gitlabReviewDecision(undefined)).toBe("unknown");
 });
