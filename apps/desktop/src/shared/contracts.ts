@@ -253,6 +253,12 @@ export type BranchPipelines = {
   host?: string;
   branches: BranchPipeline[];
 };
+/** What the runner last learned about one project's remote. A failed refresh keeps the previous data and sets `error`. */
+export type RemoteProjectState = {
+  pullRequests?: PullRequestList; pipelines?: LatestPipelines;
+  error?: { code: string; message: string }; updatedAt?: string;
+};
+export type RemoteSnapshot = { version: number; projects: Record<string, RemoteProjectState> };
 export type PullRequestDecision = "approve" | "request_changes" | "comment";
 export type PullRequestReviewDecision = "unknown" | "approved" | "changes_requested" | "review_required";
 export type PullRequestCheckStatus = "unknown" | "success" | "failure" | "pending";
@@ -452,6 +458,7 @@ export const methods = {
   get_branch_pipeline_detail: z.object({ projectId: z.string(), pipelineId: z.number().int().positive() }),
   get_branch_job_errors: z.object({ projectId: z.string(), jobId: z.number().int().positive() }),
   list_pull_requests: z.object({ projectId: z.string() }),
+  get_remote_snapshot: z.object({ since: z.number().int().min(0).default(0), waitMs: z.number().int().min(0).max(10000).default(0) }).default({ since: 0, waitMs: 0 }),
   get_pull_request: z.object({ projectId: z.string(), number: z.number().int().positive() }),
   submit_pull_request_review: z.object({
     projectId: z.string(),
@@ -604,6 +611,7 @@ export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_branch_pipeline_detail: RemotePipelineDetail;
   get_branch_job_errors: RemoteJobErrors;
   list_pull_requests: PullRequestList;
+  get_remote_snapshot: RemoteSnapshot;
   get_pull_request: PullRequestDetail;
   submit_pull_request_review: PullRequestReviewResult;
   review_pull_request_with_claude: ClaudeReview;
@@ -716,6 +724,22 @@ const dependencySchema = z.object({
   ok: z.boolean(),
   message: z.string(),
 });
+const latestPipelinesSchema = z.object({
+    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(),
+    pipelines: z.array(z.object({
+      id: z.number().int().positive(), branch: z.string(),
+      state: z.enum(["running", "success", "failed", "other"]),
+      url: z.string().optional(), updatedAt: z.string().optional(),
+    })),
+  });
+const pullRequestListSchema = z.object({
+    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), viewer: z.string().optional(),
+    pullRequests: z.array(pullRequestSummarySchema),
+  });
+const remoteProjectStateSchema = z.object({
+  pullRequests: pullRequestListSchema.optional(), pipelines: latestPipelinesSchema.optional(),
+  error: z.object({ code: z.string(), message: z.string() }).optional(), updatedAt: z.string().optional(),
+});
 export const responses = {
   ...executionResponses,
   get_execution_config: z.object({
@@ -761,14 +785,7 @@ export const responses = {
   list_jira_projects: z.array(jiraProjectSchema),
   create_jira_issue: jiraIssueSchema,
   list_git_hosts: z.array(z.string()),
-  get_latest_pipelines: z.object({
-    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(),
-    pipelines: z.array(z.object({
-      id: z.number().int().positive(), branch: z.string(),
-      state: z.enum(["running", "success", "failed", "other"]),
-      url: z.string().optional(), updatedAt: z.string().optional(),
-    })),
-  }),
+  get_latest_pipelines: latestPipelinesSchema,
   add_git_host: z.array(z.string()),
   remove_git_host: z.array(z.string()),
   list_branch_pipelines: z.object({
@@ -792,9 +809,10 @@ export const responses = {
     })),
   }),
   get_branch_job_errors: z.object({ lines: z.array(z.string()), truncated: z.boolean() }),
-  list_pull_requests: z.object({
-    provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), viewer: z.string().optional(),
-    pullRequests: z.array(pullRequestSummarySchema),
+  list_pull_requests: pullRequestListSchema,
+  get_remote_snapshot: z.object({
+    version: z.number().int().min(0),
+    projects: z.record(z.string(), remoteProjectStateSchema),
   }),
   get_pull_request: pullRequestSummarySchema.extend({
     provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), body: z.string(),

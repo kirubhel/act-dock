@@ -148,14 +148,46 @@ export function parseRemote(remote: string, selfHosted: string[] = []): { provid
   return { provider, repository, host, api: provider === "github" ? "https://api.github.com" : `https://${host}/api/v4` };
 }
 
+// Conditional requests: a 304 is cheap, and on GitHub it does not count against the rate limit.
+const ETAG_LIMIT = 2000;
+const etagCache = new Map<string, { etag: string; body: unknown }>();
+const limitedUntil = new Map<string, number>();
+const DEFAULT_LIMIT_PAUSE_MS = 5 * 60_000;
+
+/** Epoch ms until which this API host asked us to stop, or 0. Lets background polling skip a limited host. */
+export function rateLimitedUntil(api: string): number {
+  try {
+    const origin = new URL(api).origin, until = limitedUntil.get(origin) || 0;
+    if (until <= Date.now()) { limitedUntil.delete(origin); return 0; }
+    return until;
+  } catch { return 0; }
+}
+export function resetGitHttpCache() { etagCache.clear(); limitedUntil.clear(); }
+
+function noteRateLimit(url: string, response: Response) {
+  const remaining = response.headers.get("x-ratelimit-remaining") ?? response.headers.get("ratelimit-remaining");
+  if (!(response.status === 429 || (response.status === 403 && (remaining === "0" || response.headers.has("retry-after"))))) return false;
+  const retry = Number(response.headers.get("retry-after"));
+  const reset = Number(response.headers.get("x-ratelimit-reset") ?? response.headers.get("ratelimit-reset"));
+  const until = retry > 0 ? Date.now() + retry * 1000 : reset > 0 ? reset * 1000 : Date.now() + DEFAULT_LIMIT_PAUSE_MS;
+  limitedUntil.set(new URL(url).origin, Math.min(Math.max(until, Date.now() + 1000), Date.now() + 60 * 60_000));
+  return true;
+}
+
 export async function json<T>(url: string, headers: Record<string, string>): Promise<T> {
+  const secret = headers.Authorization || headers["PRIVATE-TOKEN"] || "";
+  const key = `${url}\n${Bun.hash(secret).toString(36)}`;
+  const cached = etagCache.get(key);
   let response: Response;
   try {
-    response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(12000) });
+    response = await fetch(url, { headers: cached ? { ...headers, "If-None-Match": cached.etag } : headers, redirect: "error", signal: AbortSignal.timeout(12000) });
   } catch {
     throw new AppError("GIT_API_UNAVAILABLE", "The Git provider did not respond. Check your connection and retry.");
   }
+  if (response.status === 304 && cached) return cached.body as T;
   if (!response.ok) {
+    if (noteRateLimit(url, response))
+      throw new AppError("GIT_RATE_LIMITED", "The Git provider is rate limiting this token. Act Dock will retry automatically.");
     const message = response.status === 401 || response.status === 403
       ? "The Git access token was rejected or lacks permission to view this repository."
       : response.status === 404
@@ -163,7 +195,14 @@ export async function json<T>(url: string, headers: Record<string, string>): Pro
         : `The Git provider returned HTTP ${response.status}. Retry later.`;
     throw new AppError("GIT_API_ERROR", message);
   }
-  return response.json() as Promise<T>;
+  const body = await response.json() as T;
+  const etag = response.headers.get("etag");
+  if (etag) {
+    etagCache.delete(key);
+    etagCache.set(key, { etag, body });
+    if (etagCache.size > ETAG_LIMIT) etagCache.delete(etagCache.keys().next().value as string);
+  }
+  return body;
 }
 
 export async function projectRemoteAndToken(store: Store, project: Project) {

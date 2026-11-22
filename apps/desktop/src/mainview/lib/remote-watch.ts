@@ -1,55 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import { api, notify } from "@/lib/api";
+import { notify } from "@/lib/api";
+import { useRemoteSnapshot } from "@/lib/remote-snapshot";
 import type { LatestPipeline, PipelineState, Project } from "../../shared/contracts";
 
 export type RemoteStatus = { state: PipelineState; branch: string; url?: string; id: number };
-const INTERVAL_MS = 30_000;
-const BACKOFF_MS = 5 * 60_000;
 
 /**
- * Polls each project's latest remote pipelines while the app is open.
+ * Reads each project's latest remote pipelines from the runner's snapshot (the runner does the polling).
  * Returns the newest pipeline per project and notifies when one finishes.
- * The first poll of a project is a baseline and never notifies.
+ * The first snapshot that includes a project is a baseline and never notifies.
  */
 export function useRemotePipelineWatch(projects: Project[], onFinished: (project: Project, pipeline: LatestPipeline) => void) {
   const [status, setStatus] = useState<Record<string, RemoteStatus>>({});
   const known = useRef(new Map<string, Map<number, PipelineState>>());
-  const skipUntil = useRef(new Map<string, number>());
   const finished = useRef(onFinished);
   finished.current = onFinished;
+  const snapshot = useRemoteSnapshot();
   const key = projects.map((p) => p.id).join(",");
   useEffect(() => {
-    let alive = true, timer: ReturnType<typeof setTimeout>;
-    async function pollProject(project: Project) {
-      if ((skipUntil.current.get(project.id) || 0) > Date.now()) return;
-      try {
-        const result = await api("get_latest_pipelines", { projectId: project.id });
-        if (!alive) return;
-        const previous = known.current.get(project.id);
-        const next = new Map(result.pipelines.map((p) => [p.id, p.state] as const));
-        if (previous) for (const pipeline of result.pipelines) {
-          if (pipeline.state !== "success" && pipeline.state !== "failed") continue;
-          const before = previous.get(pipeline.id);
-          if (before !== pipeline.state && (before === "running" || before === undefined)) finished.current(project, pipeline);
-        }
-        known.current.set(project.id, next);
-        const latest = result.pipelines[0];
-        setStatus((s) => {
-          if (!latest) { const { [project.id]: _, ...rest } = s; return rest; }
-          return { ...s, [project.id]: { state: latest.state, branch: latest.branch, url: latest.url, id: latest.id } };
-        });
-      } catch {
-        // Missing remote, token, or network: stop asking for a while.
-        skipUntil.current.set(project.id, Date.now() + BACKOFF_MS);
+    const next: Record<string, RemoteStatus> = {};
+    for (const project of projects) {
+      const pipelines = snapshot.projects[project.id]?.pipelines?.pipelines;
+      if (!pipelines) continue;
+      const previous = known.current.get(project.id);
+      if (previous) for (const pipeline of pipelines) {
+        if (pipeline.state !== "success" && pipeline.state !== "failed") continue;
+        const before = previous.get(pipeline.id);
+        if (before !== pipeline.state && (before === "running" || before === undefined)) finished.current(project, pipeline);
       }
+      known.current.set(project.id, new Map(pipelines.map((p) => [p.id, p.state] as const)));
+      const latest = pipelines[0];
+      if (latest) next[project.id] = { state: latest.state, branch: latest.branch, url: latest.url, id: latest.id };
     }
-    async function loop() {
-      for (const project of projects) { if (!alive) return; await pollProject(project); }
-      if (alive) timer = setTimeout(loop, INTERVAL_MS);
-    }
-    void loop();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [key]);
+    setStatus((s) => {
+      const same = Object.keys(next).length === Object.keys(s).length
+        && Object.entries(next).every(([id, v]) => s[id]?.id === v.id && s[id]?.state === v.state && s[id]?.branch === v.branch);
+      return same ? s : next;
+    });
+  }, [snapshot, key]);
   return status;
 }
 

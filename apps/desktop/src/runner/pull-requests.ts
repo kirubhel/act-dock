@@ -1,5 +1,6 @@
 import { AppError, type Project, type PullRequestDecision, type PullRequestDetail, type PullRequestFile, type PullRequestCheckStatus, type PullRequestList, type PullRequestMergeable, type PullRequestReviewDecision, type PullRequestReviewResult, type PullRequestSummary } from "../shared/contracts";
 import { json, projectRemoteAndToken, requestApi, type parseRemote } from "./branch-pipelines";
+import { mapLimit } from "./map-limit";
 import { Store } from "./store";
 
 type Remote = ReturnType<typeof parseRemote>;
@@ -158,16 +159,6 @@ async function enrich(remote: Remote, h: Record<string, string>, summary: PullRe
   return { ...summary, reviewDecision: gitlabReviewDecision(approvals),
     ...(mr ? { checkStatus: gitlabCheckStatus(mr.head_pipeline), mergeable: gitlabMergeable(mr) } : {}) };
 }
-
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
-  }));
-  return out;
-}
-
 
 export async function listPullRequests(store: Store, project: Project): Promise<PullRequestList> {
   const { remote, token } = await projectRemoteAndToken(store, project);

@@ -42,6 +42,7 @@ import {
 } from "./jira";
 import { setLogin } from "./login";
 import { listenLocal } from "./transport";
+import { RemoteWatcher, remoteFetcher } from "./remote-watch";
 export async function serve() {
   preparePaths();
   const lock = dataDir + "/runner.lock";
@@ -84,11 +85,13 @@ export async function serve() {
   } catch {}
   const store = new Store(dataDir);
   const scheduler = new Scheduler(store);
+  const remoteWatcher = new RemoteWatcher(() => store.projects(), remoteFetcher(store));
   let server: Awaited<ReturnType<typeof listenLocal>>;
   let closing = false;
   async function shutdown() {
     if (closing) return;
     closing = true;
+    remoteWatcher.stop();
     await scheduler.stop();
     await server.stop(true);
     store.close();
@@ -482,6 +485,10 @@ export async function serve() {
       case "list_pull_requests": {
         const p = methods.list_pull_requests.parse(raw);
         return listPullRequests(store, store.project(p.projectId));
+      }
+      case "get_remote_snapshot": {
+        const p = methods.get_remote_snapshot.parse(raw);
+        return remoteWatcher.wait(p.since, p.waitMs);
       }
       case "get_pull_request": {
         const p = methods.get_pull_request.parse(raw);
