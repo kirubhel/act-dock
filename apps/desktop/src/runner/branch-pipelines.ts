@@ -183,14 +183,12 @@ export async function projectRemoteAndToken(store: Store, project: Project) {
 
   // 1. Try locally decrypting project credential
   let token = projectCred ? decryptToken(store, projectCred) : null;
-  let activeCred = token ? projectCred : null;
 
   // 2. If project credential is missing or unencrypted, fallback to category credential
   if (!token && categoryCred) {
     const catToken = decryptToken(store, categoryCred);
     if (catToken) {
       token = catToken;
-      activeCred = categoryCred;
       if (projectCred && !projectCred.encrypted) {
         const enc = encryptToken(store, catToken);
         const credKey = credentialKey("project", project.id, provider);

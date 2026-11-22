@@ -254,9 +254,29 @@ export type BranchPipelines = {
   branches: BranchPipeline[];
 };
 export type PullRequestDecision = "approve" | "request_changes" | "comment";
+export type PullRequestReviewDecision = "unknown" | "approved" | "changes_requested" | "review_required";
+export type PullRequestCheckStatus = "unknown" | "success" | "failure" | "pending";
+export type PullRequestMergeable = "unknown" | "clean" | "conflicting";
+export const pullRequestReviewDecisionSchema = z.enum(["unknown", "approved", "changes_requested", "review_required"]);
+export const pullRequestCheckStatusSchema = z.enum(["unknown", "success", "failure", "pending"]);
+export const pullRequestMergeableSchema = z.enum(["unknown", "clean", "conflicting"]);
+const pullRequestSummarySchema = z.object({
+  number: z.number().int().positive(), title: z.string(), author: z.string(), own: z.boolean(), draft: z.boolean(),
+  branch: z.string(), base: z.string(), url: z.string(), updatedAt: z.string(), headSha: z.string(),
+  reviewers: z.array(z.string()).or(z.literal("unknown")),
+  reviewDecision: pullRequestReviewDecisionSchema,
+  checkStatus: pullRequestCheckStatusSchema,
+  mergeable: pullRequestMergeableSchema,
+  isCurrentUserRequestedReviewer: z.boolean().or(z.literal("unknown")),
+});
 export type PullRequestSummary = {
   number: number; title: string; author: string; own: boolean; draft: boolean;
   branch: string; base: string; url: string; updatedAt: string; headSha: string;
+  reviewers: string[] | "unknown";
+  reviewDecision: PullRequestReviewDecision;
+  checkStatus: PullRequestCheckStatus;
+  mergeable: PullRequestMergeable;
+  isCurrentUserRequestedReviewer: boolean | "unknown";
 };
 export type PullRequestList = {
   provider: GitProvider; repository: string; host?: string; viewer?: string; pullRequests: PullRequestSummary[];
@@ -774,15 +794,9 @@ export const responses = {
   get_branch_job_errors: z.object({ lines: z.array(z.string()), truncated: z.boolean() }),
   list_pull_requests: z.object({
     provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), viewer: z.string().optional(),
-    pullRequests: z.array(z.object({
-  number: z.number().int().positive(), title: z.string(), author: z.string(), own: z.boolean(), draft: z.boolean(),
-  branch: z.string(), base: z.string(), url: z.string(), updatedAt: z.string(), headSha: z.string(),
-})),
+    pullRequests: z.array(pullRequestSummarySchema),
   }),
-  get_pull_request: z.object({
-  number: z.number().int().positive(), title: z.string(), author: z.string(), own: z.boolean(), draft: z.boolean(),
-  branch: z.string(), base: z.string(), url: z.string(), updatedAt: z.string(), headSha: z.string(),
-}).extend({
+  get_pull_request: pullRequestSummarySchema.extend({
     provider: gitProviderSchema, repository: z.string(), host: z.string().optional(), body: z.string(),
     files: z.array(z.object({
       path: z.string(), oldPath: z.string().optional(), status: z.enum(["added", "modified", "removed", "renamed"]),

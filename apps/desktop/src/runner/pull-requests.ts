@@ -34,21 +34,51 @@ async function viewer(remote: Remote, token: string): Promise<string | undefined
 type GhPull = {
   number: number; title: string; draft?: boolean; html_url: string; updated_at: string;
   user?: { login: string } | null; head: { ref: string; sha: string }; base: { ref: string }; body?: string | null;
+  requested_reviewers?: { login: string }[]; requested_teams?: { slug: string }[];
+  review_decision?: string | null; mergeable?: boolean | null; mergeable_state?: string;
+  statusCheckRollup?: { state?: string }[] | null;
 };
 type GlMr = {
   iid: number; title: string; draft?: boolean; web_url: string; updated_at: string; sha?: string | null;
   author?: { username: string } | null; source_branch: string; target_branch: string; description?: string | null;
+  reviewers?: { username: string }[]; approved?: boolean; detailed_merge_status?: string; merge_status?: string;
+  head_pipeline?: { status?: string } | null;
 };
+
+function mapCheckStatus(statuses: { state?: string }[] | null | undefined) {
+  if (!statuses) return "unknown" as const;
+  if (!statuses.length) return "pending" as const;
+  const states = statuses.map((s) => (s.state || "").toUpperCase());
+  if (states.includes("FAILURE") || states.includes("ERROR")) return "failure" as const;
+  if (states.every((s) => s === "SUCCESS" || s === "EXPECTED")) return "success" as const;
+  return "pending" as const;
+}
 
 function summarize(remote: Remote, raw: GhPull | GlMr, me: string | undefined): PullRequestSummary {
   if (remote.provider === "github") {
     const pr = raw as GhPull, author = pr.user?.login || "unknown";
+    const requested = pr.requested_reviewers?.map((r) => r.login) || [];
+    const state = (pr.review_decision || "").toLowerCase();
     return { number: pr.number, title: pr.title, author, own: !!me && author.toLowerCase() === me, draft: !!pr.draft,
-      branch: pr.head.ref, base: pr.base.ref, url: pr.html_url, updatedAt: pr.updated_at, headSha: pr.head.sha };
+      branch: pr.head.ref, base: pr.base.ref, url: pr.html_url, updatedAt: pr.updated_at, headSha: pr.head.sha,
+      reviewers: pr.requested_reviewers ? [...requested, ...(pr.requested_teams || []).map((t) => `team:${t.slug}`)] : "unknown",
+      reviewDecision: !me || !pr.review_decision ? "unknown" : state === "approved" ? "approved" : state === "changes_requested" ? "changes_requested" : "review_required",
+      checkStatus: mapCheckStatus(pr.statusCheckRollup),
+      // GitHub's list endpoint normally returns null; Task B fetches GET /pulls/{n} for this field.
+      mergeable: pr.mergeable === true ? "clean" : pr.mergeable === false ? "conflicting" : "unknown",
+      isCurrentUserRequestedReviewer: me ? requested.some((r) => r.toLowerCase() === me) : "unknown" };
   }
   const mr = raw as GlMr, author = mr.author?.username || "unknown";
+  const requested = mr.reviewers?.map((r) => r.username) || [];
+  const merge = (mr.detailed_merge_status || mr.merge_status || "").toLowerCase();
+  const pipeline = (mr.head_pipeline?.status || "").toLowerCase();
   return { number: mr.iid, title: mr.title, author, own: !!me && author.toLowerCase() === me, draft: !!mr.draft,
-    branch: mr.source_branch, base: mr.target_branch, url: mr.web_url, updatedAt: mr.updated_at, headSha: mr.sha || "" };
+    branch: mr.source_branch, base: mr.target_branch, url: mr.web_url, updatedAt: mr.updated_at, headSha: mr.sha || "",
+    reviewers: mr.reviewers ? requested : "unknown",
+    reviewDecision: !me || mr.approved === undefined ? "unknown" : mr.approved ? "approved" : "review_required",
+    checkStatus: !mr.head_pipeline ? "unknown" : pipeline === "success" ? "success" : ["failed", "canceled", "skipped"].includes(pipeline) ? "failure" : "pending",
+    mergeable: merge ? (merge.includes("conflict") ? "conflicting" : merge === "mergeable" || merge === "can_be_merged" ? "clean" : "unknown") : "unknown",
+    isCurrentUserRequestedReviewer: me ? requested.some((r) => r.toLowerCase() === me) : "unknown" };
 }
 
 export async function listPullRequests(store: Store, project: Project): Promise<PullRequestList> {
