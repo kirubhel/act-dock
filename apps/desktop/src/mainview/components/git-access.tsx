@@ -453,14 +453,17 @@ export function RemotePipelineView({ selection, onClose }: { selection: RemoteSe
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [jobErrors, setJobErrors] = useState<Record<number, RemoteJobErrors | string>>({});
+  /** What the last reload found, so a reload that changes nothing still visibly did something. */
+  const [checked, setChecked] = useState<{ at: Date; changed: boolean } | null>(null);
   const request = useRef(0);
+  const shown = useRef("");
 
   /** `refresh` re-reads the branch's latest pipeline first (a rerun is a new pipeline), and keeps what is on screen until the new data arrives. */
   async function load(target: typeof branch, refresh: boolean) {
     const current = ++request.current;
     const stale = () => current !== request.current;
     setLoading(true); setError("");
-    if (!refresh) { setDetail(null); setJobErrors({}); }
+    if (!refresh) { setDetail(null); setJobErrors({}); setChecked(null); }
     try {
       let pipeline = target;
       if (refresh) {
@@ -469,10 +472,19 @@ export function RemotePipelineView({ selection, onClose }: { selection: RemoteSe
         pipeline = list.branches.find((b) => b.branch === target.branch) ?? target;
         setBranch(pipeline);
       }
-      if (!pipeline.id) { setDetail(null); setJobErrors({}); return; }
+      if (!pipeline.id) {
+        setDetail(null); setJobErrors({});
+        if (refresh) setChecked({ at: new Date(), changed: shown.current !== "none" });
+        shown.current = "none";
+        return;
+      }
       const result = await api("get_branch_pipeline_detail", { projectId, pipelineId: pipeline.id });
       if (stale()) return;
       setDetail(result);
+      const signature = `${pipeline.id}:${pipeline.status}:${pipeline.conclusion ?? ""}|${result.jobs.map((j) => `${j.id}=${j.conclusion || j.status}`).join(",")}`;
+      if (refresh) setChecked({ at: new Date(), changed: shown.current !== signature });
+      else setChecked(null);
+      shown.current = signature;
       const failed = result.jobs.filter((job) => job.conclusion === "failure" || job.status === "failed").slice(0, 5);
       const entries = await Promise.all(failed.map(async (job) => {
         try { return [job.id, await api("get_branch_job_errors", { projectId, jobId: job.id })] as const; }
@@ -527,6 +539,11 @@ export function RemotePipelineView({ selection, onClose }: { selection: RemoteSe
         )}
 
         {loading && <p className="field-help" role="status">{detail ? "Reloading jobs and errors…" : "Loading jobs and errors…"}</p>}
+        {!loading && !error && checked && (
+          <p className="field-help" role="status">
+            Checked {checked.at.toLocaleTimeString()} · {checked.changed ? "updated with the latest from " : "no changes in "}{provider === "github" ? "GitHub" : "GitLab"}
+          </p>
+        )}
         {error && <p className="form-error" role="alert">{error}</p>}
         {detail?.jobs.map((job) => {
           const excerpt = jobErrors[job.id];
