@@ -446,38 +446,48 @@ export function BranchPipelinePanel({ project, onConfigure, selected, onSelect }
 }
 
 export function RemotePipelineView({ selection, onClose }: { selection: RemoteSelection; onClose: () => void }) {
-  const { projectId, provider, host, repository, branch } = selection;
+  const { projectId, provider, host, repository } = selection;
+  // Reloading can find a newer pipeline for the same branch, so the branch shown is state, not the selection.
+  const [branch, setBranch] = useState(selection.branch);
   const [detail, setDetail] = useState<RemotePipelineDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [jobErrors, setJobErrors] = useState<Record<number, RemoteJobErrors | string>>({});
+  const request = useRef(0);
+
+  /** `refresh` re-reads the branch's latest pipeline first (a rerun is a new pipeline), and keeps what is on screen until the new data arrives. */
+  async function load(target: typeof branch, refresh: boolean) {
+    const current = ++request.current;
+    const stale = () => current !== request.current;
+    setLoading(true); setError("");
+    if (!refresh) { setDetail(null); setJobErrors({}); }
+    try {
+      let pipeline = target;
+      if (refresh) {
+        const list = await api("list_branch_pipelines", { projectId });
+        if (stale()) return;
+        pipeline = list.branches.find((b) => b.branch === target.branch) ?? target;
+        setBranch(pipeline);
+      }
+      if (!pipeline.id) { setDetail(null); setJobErrors({}); return; }
+      const result = await api("get_branch_pipeline_detail", { projectId, pipelineId: pipeline.id });
+      if (stale()) return;
+      setDetail(result);
+      const failed = result.jobs.filter((job) => job.conclusion === "failure" || job.status === "failed").slice(0, 5);
+      const entries = await Promise.all(failed.map(async (job) => {
+        try { return [job.id, await api("get_branch_job_errors", { projectId, jobId: job.id })] as const; }
+        catch (e) { return [job.id, fail(e)] as const; }
+      }));
+      if (!stale()) setJobErrors(Object.fromEntries(entries));
+    } catch (e) { if (!stale()) setError(fail(e)); }
+    finally { if (!stale()) setLoading(false); }
+  }
 
   useEffect(() => {
-    let alive = true;
-    setDetail(null); setJobErrors({}); setError("");
-
-    if (!branch.id) {
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    (async () => {
-      try {
-        const result = await api("get_branch_pipeline_detail", { projectId, pipelineId: branch.id! });
-        if (!alive) return;
-        setDetail(result);
-        const failed = result.jobs.filter((job) => job.conclusion === "failure" || job.status === "failed").slice(0, 5);
-        const entries = await Promise.all(failed.map(async (job) => {
-          try { return [job.id, await api("get_branch_job_errors", { projectId, jobId: job.id })] as const; }
-          catch (e) { return [job.id, fail(e)] as const; }
-        }));
-        if (alive) setJobErrors(Object.fromEntries(entries));
-      } catch (e) { if (alive) setError(fail(e)); }
-      finally { if (alive) setLoading(false); }
-    })();
-    return () => { alive = false; };
-  }, [projectId, branch.id]);
+    setBranch(selection.branch);
+    void load(selection.branch, false);
+    return () => { request.current++; };
+  }, [projectId, selection.branch.branch, selection.branch.id]);
 
   return (
     <section className="run-pane">
@@ -498,6 +508,9 @@ export function RemotePipelineView({ selection, onClose }: { selection: RemoteSe
               <ArrowUpRight className="size-3.5" /> Open
             </Button>
           )}
+          <Button size="sm" variant="ghost" disabled={loading} onClick={() => void load(branch, true)} title="Check the provider again for this branch's latest pipeline, jobs and errors">
+            <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} /> Reload
+          </Button>
           <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
         </div>
       </div>
@@ -513,7 +526,7 @@ export function RemotePipelineView({ selection, onClose }: { selection: RemoteSe
           </div>
         )}
 
-        {loading && <p className="field-help">Loading jobs and errors…</p>}
+        {loading && <p className="field-help" role="status">{detail ? "Reloading jobs and errors…" : "Loading jobs and errors…"}</p>}
         {error && <p className="form-error" role="alert">{error}</p>}
         {detail?.jobs.map((job) => {
           const excerpt = jobErrors[job.id];
