@@ -3638,3 +3638,27 @@ body.is-resizing * {
 .ai-keep { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; color: var(--muted-foreground); font-size: 11.5px; min-width: 68px; }
 .ai-dup-items li[data-kept] .ai-keep { color: var(--foreground); }
 .ai-dup-items .ai-size { margin-left: auto; }
+
+/* ── Generate report ── */
+.rp-section { margin-top: 26px; }
+.rp-range { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.rp-range .field { width: 168px; }
+.rp-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.rp-head h2 { font-size: 14px; }
+.rp-head h2 span { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted-foreground); }
+.rp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.rp-section .ai-list, .rp-section textarea { margin-top: 10px; }
+.rp-section .field-help { margin-top: 8px; }
+.rp-template { min-height: 260px; font-size: 12px; line-height: 1.6; }
+.rp-output { min-height: 420px; font-size: 12.5px; line-height: 1.6; }
+.rp-result { margin-top: 18px; }
+.rp-result .ai-warn { margin-bottom: 8px; }
+.rp-repo .rp-commits { margin-top: 8px; font-size: 12.5px; }
+.rp-commits summary { cursor: pointer; color: var(--muted-foreground); width: fit-content; }
+.rp-commits summary:hover { color: var(--foreground); }
+.rp-commits > ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.rp-commits .mono { font-size: 11px; color: var(--muted-foreground); }
+.rp-files { list-style: none; margin: 4px 0 0; padding: 0 0 0 10px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.rp-files li { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.rp-files li span:first-child { overflow-wrap: anywhere; }
+.rp-files li span:last-child { white-space: nowrap; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }

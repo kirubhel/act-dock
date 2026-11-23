@@ -44,16 +44,16 @@ function render(pr: PullRequestDetail) {
   ].join("\n\n");
 }
 
-async function runClaude(prompt: string, stdin: string): Promise<string> {
+export async function runClaude(prompt: string, stdin: string, system = SYSTEM): Promise<string> {
   const bin = findClaude();
   if (!bin) throw new AppError("CLAUDE_NOT_FOUND", "Claude Code was not found. Install it from claude.com/claude-code and sign in, then retry.");
   return new Promise<string>((resolve, reject) => {
     // Read-only by construction: every tool is disabled, no session is saved, and the working directory is empty.
-    const child = spawn(bin, ["-p", prompt, "--output-format", "json", "--tools", "", "--no-session-persistence", "--append-system-prompt", SYSTEM],
+    const child = spawn(bin, ["-p", prompt, "--output-format", "json", "--tools", "", "--no-session-persistence", "--append-system-prompt", system],
       { cwd: tmpdir(), stdio: ["pipe", "pipe", "pipe"] });
     let out = "", err = "", done = false;
     const finish = (fn: () => void) => { if (!done) { done = true; clearTimeout(timer); fn(); } };
-    const timer = setTimeout(() => { child.kill("SIGKILL"); finish(() => reject(new AppError("CLAUDE_TIMEOUT", "Claude took too long to review this pull request. Try again or review a smaller change."))); }, TIMEOUT_MS);
+    const timer = setTimeout(() => { child.kill("SIGKILL"); finish(() => reject(new AppError("CLAUDE_TIMEOUT", "Claude took too long to answer. Try again with a smaller change or a shorter period."))); }, TIMEOUT_MS);
     child.stdout.on("data", (chunk) => { if (out.length < 4_000_000) out += chunk; });
     child.stderr.on("data", (chunk) => { if (err.length < 8_000) err += chunk; });
     child.once("error", () => finish(() => reject(new AppError("CLAUDE_NOT_FOUND", "Claude Code could not be started. Check that it is installed."))));

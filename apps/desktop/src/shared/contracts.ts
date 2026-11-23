@@ -439,6 +439,66 @@ export const healthReportSchema = z.object({
   checks: z.array(healthCheckSchema),
 });
 export type HealthReport = z.infer<typeof healthReportSchema>;
+export const activityFileSchema = z.object({ path: z.string(), additions: z.number(), deletions: z.number() });
+export const activityCommitSchema = z.object({
+  hash: z.string(),
+  /** Matches ActivityAuthor.key. */
+  author: z.string(),
+  date: z.string(),
+  subject: z.string(),
+  files: z.array(activityFileSchema),
+  /** The real count when `files` was shortened for a very large commit. */
+  filesTotal: z.number(),
+});
+export const activityRepoSchema = z.object({
+  projectId: z.string(),
+  name: z.string(),
+  category: z.string().optional(),
+  commits: z.array(activityCommitSchema),
+  /** More commits existed than are listed. */
+  truncated: z.boolean(),
+  /** Why this repository could not be read or refreshed, when it could not. */
+  note: z.string().optional(),
+});
+export const activityAuthorSchema = z.object({
+  /** Stable id: the member's email, otherwise the author's git email, lowercased. */
+  key: z.string(),
+  name: z.string(),
+  email: z.string(),
+  /** Listed in Team for at least one project. */
+  member: z.boolean(),
+  commits: z.number(),
+  repos: z.array(z.string()),
+});
+export const activityReportSchema = z.object({
+  since: z.string(),
+  until: z.string(),
+  /** Remotes were fetched first, so commits not yet pulled are included. */
+  fetched: z.boolean(),
+  repos: z.array(activityRepoSchema),
+  authors: z.array(activityAuthorSchema),
+});
+export type ActivityFile = z.infer<typeof activityFileSchema>;
+export type ActivityCommit = z.infer<typeof activityCommitSchema>;
+export type ActivityRepo = z.infer<typeof activityRepoSchema>;
+export type ActivityAuthor = z.infer<typeof activityAuthorSchema>;
+export type ActivityReport = z.infer<typeof activityReportSchema>;
+export const reportTemplateSchema = z.object({ template: z.string(), isDefault: z.boolean() });
+export type ReportTemplate = z.infer<typeof reportTemplateSchema>;
+export const generatedReportSchema = z.object({
+  markdown: z.string(),
+  /** claude wrote it from the template; digest is the plain activity list used when Claude is unavailable. */
+  source: z.enum(["claude", "digest"]),
+  note: z.string().optional(),
+});
+export type GeneratedReport = z.infer<typeof generatedReportSchema>;
+const reportDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date like 2026-11-23.");
+const reportRange = z.object({
+  since: reportDate,
+  until: reportDate,
+  /** Only these projects; every project when omitted. */
+  projectIds: z.array(z.string()).max(500).optional(),
+});
 const id = z.object({ runId: z.string().min(1) });
 export const methods = {
   list_projects: z.object({}),
@@ -533,6 +593,15 @@ export const methods = {
   get_branch_pipeline_detail: z.object({ projectId: z.string(), pipelineId: z.number().int().positive() }),
   get_branch_job_errors: z.object({ projectId: z.string(), jobId: z.number().int().positive() }),
   list_pull_requests: z.object({ projectId: z.string() }),
+  collect_activity: reportRange.extend({ fetch: z.boolean().default(true) }),
+  get_report_template: z.object({}).default({}),
+  put_report_template: z.object({ template: z.string().max(40000) }),
+  generate_report: reportRange.extend({
+    /** ActivityAuthor.key values to include. */
+    authors: z.array(z.string().min(1).max(320)).min(1).max(200),
+    /** Overrides the saved template for this report only. */
+    template: z.string().max(40000).optional(),
+  }),
   scan_ai_inventory: z.object({}).default({}),
   scan_ai_usage: z.object({}).default({}),
   install_ai_skills: z.object({
@@ -661,7 +730,7 @@ export const methods = {
 } as const;
 export type Method = keyof typeof methods;
 /** Methods that wait on the local Claude CLI and may legitimately take minutes. */
-const slowMethods: readonly Method[] = ["review_pull_request_with_claude", "ask_claude_about_pull_request", "scan_ai_inventory", "scan_ai_usage", "remove_ai_items", "repair_ai_links"];
+const slowMethods: readonly Method[] = ["review_pull_request_with_claude", "ask_claude_about_pull_request", "scan_ai_inventory", "scan_ai_usage", "collect_activity", "generate_report", "remove_ai_items", "repair_ai_links"];
 export const requestTimeoutMs = (method: Method) => (slowMethods.includes(method) ? 300_000 : undefined);
 export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_execution_config: {
@@ -706,6 +775,10 @@ export type Results = Omit<ExecutionResults, "patch_settings"> & {
   get_branch_job_errors: RemoteJobErrors;
   list_pull_requests: PullRequestList;
   get_remote_snapshot: RemoteSnapshot;
+  collect_activity: ActivityReport;
+  get_report_template: ReportTemplate;
+  put_report_template: ReportTemplate;
+  generate_report: GeneratedReport;
   scan_ai_inventory: AiInventory;
   scan_ai_usage: AiUsageReport;
   remove_ai_items: AiRemovalResult;
@@ -936,6 +1009,10 @@ export const responses = {
   }),
   get_branch_job_errors: z.object({ lines: z.array(z.string()), truncated: z.boolean() }),
   list_pull_requests: pullRequestListSchema,
+  collect_activity: activityReportSchema,
+  get_report_template: reportTemplateSchema,
+  put_report_template: reportTemplateSchema,
+  generate_report: generatedReportSchema,
   scan_ai_inventory: aiInventorySchema,
   scan_ai_usage: z.object({
     usage: z.record(z.string(), z.array(z.object({

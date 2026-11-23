@@ -19,9 +19,9 @@ type Scope = { projectId?: string; category?: string };
 type JiraStored = { site: string; email: string; updatedAt: string } & Credential;
 
 const CONFIG_KEY = "jira-config";
-const kv = (store: Store, key: string) =>
+export const kv = (store: Store, key: string) =>
   (store.db.query("SELECT value FROM installation WHERE key=?").get(key) as { value: string } | null)?.value;
-const putKv = (store: Store, key: string, value: string) =>
+export const putKv = (store: Store, key: string, value: string) =>
   store.db
     .query("INSERT INTO installation (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .run(key, value);

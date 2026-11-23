@@ -35,6 +35,7 @@ import {
   Terminal,
   Activity,
   Boxes,
+  FileText,
   ListTodo,
   Users,
 } from "lucide-react";
@@ -82,6 +83,7 @@ import { AddProjectDialog } from "@/components/add-project-dialog";
 import { BranchPipelinePanel, GitAccessSettings, RemotePipelineView, type RemoteSelection } from "@/components/git-access";
 import { CreateJiraTaskDialog, TeamSettings } from "@/components/team";
 import { AiToolkitView } from "@/components/ai-toolkit";
+import { ReportView } from "@/components/report";
 import { PullRequestPanel, PullRequestReview, type PullRequestSelection } from "@/components/pull-requests";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
@@ -117,7 +119,8 @@ type View =
   | "agents"
   | "settings"
   | "health"
-  | "ai";
+  | "ai"
+  | "report";
 function Workspace() {
   const [projects, setProjects] = useState<Project[]>([]),
     [runs, setRuns] = useState<Run[]>([]),
@@ -709,6 +712,7 @@ function Workspace() {
                   { id: "history", label: "Run history", icon: History },
                   { id: "agents", label: "Agent connections", icon: Cable },
                   { id: "health", label: "System health", icon: Activity },
+                  { id: "report", label: "Generate report", icon: FileText },
                   { id: "ai", label: "AI toolkit", icon: Boxes },
                 ] as const
               ).map((item) => (
@@ -859,7 +863,9 @@ function Workspace() {
                       ? "System health"
                       : view === "ai"
                         ? "AI toolkit"
-                        : "Settings"}
+                        : view === "report"
+                          ? "Generate report"
+                          : "Settings"}
             </strong>
           </div>
           <div className="topbar-meta">
@@ -1270,6 +1276,11 @@ function Workspace() {
         {view === "ai" && (
           <ScrollArea className="page-scroll">
             <AiToolkitView />
+          </ScrollArea>
+        )}
+        {view === "report" && (
+          <ScrollArea className="page-scroll">
+            <ReportView />
           </ScrollArea>
         )}
         {view === "health" && (

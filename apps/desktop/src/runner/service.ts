@@ -44,6 +44,7 @@ import { setLogin } from "./login";
 import { listenLocal } from "./transport";
 import { RemoteWatcher, remoteFetcher } from "./remote-watch";
 import { AiToolkit } from "./ai-inventory";
+import { collectActivity, generateReport, getReportTemplate, putReportTemplate } from "./activity-report";
 export async function serve() {
   preparePaths();
   const lock = dataDir + "/runner.lock";
@@ -488,6 +489,15 @@ export async function serve() {
         const p = methods.list_pull_requests.parse(raw);
         return listPullRequests(store, store.project(p.projectId));
       }
+      case "collect_activity":
+        return collectActivity(store, methods.collect_activity.parse(raw));
+      case "get_report_template":
+        methods.get_report_template.parse(raw);
+        return getReportTemplate(store);
+      case "put_report_template":
+        return putReportTemplate(store, methods.put_report_template.parse(raw).template);
+      case "generate_report":
+        return generateReport(store, methods.generate_report.parse(raw));
       case "scan_ai_inventory":
         methods.scan_ai_inventory.parse(raw);
         return aiToolkit.scan();
