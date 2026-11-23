@@ -50,6 +50,18 @@ With the same token, the project page lists open pull requests (GitHub) or merge
 
 MCP agents can list, read, comment and request changes through `list_pull_requests`, `get_pull_request` and `submit_pull_request_review`, but only you can approve.
 
+### Team, Jira and status reports
+
+Add people under **Project settings → Team & Jira**, or from the gear beside a category in the sidebar to share them across its projects. Each member has a name, an email and an optional GitHub or GitLab username; a project lists its own members plus its group's. Connect Jira once (your Jira Cloud address, account email and an API token, stored encrypted on this machine), then use **Create Jira task** on the project page to file an issue and assign it to a member. If Jira hides a person's email, search for them by name once and Act Dock remembers the link.
+
+**Generate report** (sidebar, above AI toolkit) reads each project's local git history for a date range, which starts as the last 7 days. It fetches remotes first, then shows every author with commit counts, matched to your Team members by email or noreply username. Choose the people and repositories to include and expand any repository to see the commits and files behind the report. Your installed Claude Code CLI then fills your template (editable, saved on this machine, resettable to the default) from commit messages and file names. Without Claude you get a plain activity list. Reports are not saved, so copy the markdown before leaving the page.
+
+A report shows **activity, not delivery**: commits on any branch count, including work that is not merged or released, and Claude only sees commit messages and file names. Check milestones, status and next steps before you send it.
+
+### AI toolkit
+
+**AI toolkit** (sidebar) scans your home folder, read-only, for local models (Ollama, Hugging Face, LM Studio and large model files) and for skills, agents and commands used by Claude, Codex, Gemini, Cursor, OpenCode and the shared `~/.agents` folder. It shows sizes, what each item is for, which apps appear to use a model, duplicate skills and broken skill links. Skills can be installed into Claude, Codex or Antigravity as a link or a copy. Removals always show a preview first and move items to the Trash.
+
 Run configurations store file references rather than secret contents. Workflows run against current working files. The app honors managed `.actrc` preferences. Ubuntu labels resolve independently: `ubuntu-latest` and `ubuntu-24.04` use `catthehacker/ubuntu:act-24.04`, while 22.04 and legacy 20.04 use their matching tags. Medium remains the default; full/custom images are optional. This is local GitHub Actions execution with [act's supported functionality](https://nektosact.com/usage/index.html).
 
 ## Execution preferences
